@@ -1,0 +1,15 @@
+{
+  "Job": "6",
+  "Option": "7",
+  "RT/PAUT|BW": "8",
+  "RT/PAUT|ATTACH": "12",
+  "RT/PAUT|BRANCH": "16",
+  "RT/PAUT|SW": "9",
+  "PT/MT|BW": "17",
+  "PT/MT|SW": "18",
+  "PT/MT|ATTACH": "21",
+  "PT/MT|BRANCH": "23",
+  "PT/MT|FW": "19",
+  "PT/MT|SEAL": "22",
+  "PT/MT|OL": "20"
+}
