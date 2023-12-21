@@ -4,9 +4,9 @@ import re, os, sys, requests, json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QMenuBar, QMenu,
     QFileDialog, QVBoxLayout, QInputDialog, QTableWidget, QTableWidgetItem, 
-    QPushButton, QMessageBox, QErrorMessage
+    QPushButton, QMessageBox, QErrorMessage, QHeaderView, QTableView
     )
-from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication
+from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 import pandas as pd
 from simpledbf import Dbf5
@@ -262,77 +262,195 @@ def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
 
     return df
 
-# class CustomHeaderView(QHeaderView):
-#     iconClicked = pyqtSignal(int)  # Signal emitted when an icon is clicked
+class CustomHeaderView(QHeaderView):
+    iconClicked = pyqtSignal(int)  # Signal emitted when an icon is clicked
 
-#     def __init__(self, orientation, parent=None):
-#         super().__init__(orientation, parent)
-#         self.icon = QIcon("assets/filter_icon.svg")
-
-#     def paintSection(self, painter, rect, logicalIndex):
-#         super().paintSection(painter, rect, logicalIndex)
-
-#         # Adjust the position of the icon to the bottom left
-#         icon_size = 20  # Width and height of the icon
-#         padding = 2  # Padding from the bottom
-#         icon_rect = QRect(rect.left() + padding, rect.bottom() - icon_size - padding, icon_size, icon_size)
-#         self.icon.paint(painter, icon_rect)
-
-#     def mousePressEvent(self, event):
-#         super().mousePressEvent(event)
-
-#         # Check if the click event occurred on the icon area
-#         index = self.logicalIndexAt(event.position().toPoint())
-#         icon_rect = QRect(self.sectionViewportPosition(index) + 2, self.height() - 22, 20, 20)  # Bottom-left position
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        print("CustomHeaderView accessed")
+        self.icon = QIcon("assets/filter_icon.svg")
         
-#         if icon_rect.contains(event.position().toPoint()):
-#             self.iconClicked.emit(index)
+        if self.icon.isNull():
+            print("Filter icon failed to load. Check the file path.")
+            
+    def setModel(self, model):
+        super().setModel(model)
+        for col in range(model.columnCount()):
+            self.setIconForColumn(col)
 
-class CustomTableWidget(QTableWidget):
+    def setIconForColumn(self, col):
+        icon = QIcon("assets/filter_icon.svg")
+        #self.model().setHeaderData(col, Qt.Orientation.Horizontal, icon, Qt.ItemDataRole.DecorationRole)
+
+    def paintSection(self, painter, rect, logicalIndex):
+        super().paintSection(painter, rect, logicalIndex)
+
+        print("PaintSection has been called")
+        # Ensure icon is loaded
+        if self.icon.isNull():
+            print("Icon is not valid.")
+            return
+
+        # Calculate icon position
+        icon_size = 20
+        icon_x = rect.right() - icon_size - 5  # 5 pixels from the right edge
+        icon_y = (rect.height() - icon_size) // 2  # Vertically centered
+        icon_rect = QRect(icon_x, icon_y, icon_size, icon_size)
+
+        # Paint the icon
+        self.icon.paint(painter, icon_rect)
+        
+    def sectionCountChanged(self, oldCount, newCount):
+        super().sectionCountChanged(oldCount, newCount)
+        # Update icons for new columns
+        for col in range(newCount):
+            self.setIconForColumn(col)
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+
+        # Check if the click event occurred on the icon area
+        index = self.logicalIndexAt(event.position().toPoint())
+        icon_rect = QRect(self.sectionViewportPosition(index) + 2, self.height() - 22, 20, 20)  # Bottom-left position
+        
+        if icon_rect.contains(event.position().toPoint()):
+            self.iconClicked.emit(index)
+
+class StandardTable(QWidget):
+    def __init__(self, parent=None):  # Add parent=None to accept an optional parent argument
+        super().__init__(parent)  # Pass the parent to the QWidget constructor
+        self.layout = QVBoxLayout(self)
+        
+        # Create a "Build RT Report" button
+        #self.export_excel_button = QPushButton("Export Table", self)
+        # self.rt_report_button.clicked.connect(self.build_rt)  # Connect the button to the build_rt function
+        #self.layout.addWidget(self.export_excel_button)
+        
+        # Create a model and view for the standard table
+        self.model = QStandardItemModel()
+        self.view = QTableView(self)
+        self.view.setModel(self.model)
+
+        # Set the custom header view for the table
+        header_view = CustomHeaderView(Qt.Orientation.Horizontal, self.view)
+        self.view.setHorizontalHeader(header_view)
+        
+        header_view.iconClicked.connect(self.filter_click)
+        
+        # Set up the QTableView
+        # self.view.setEditTriggers(QTableView.NoEditTriggers)  # Optional: make cells not editable
+        # self.view.setSelectionBehavior(QTableView.SelectRows)  # Optional: change selection behavior
+
+        self.layout.addWidget(self.view)
+        
+    def build_filter_menu(self, column_index):
+        """Build and return a QMenu for the filter options."""
+        menu = QMenu(self)
+    
+        # Set a fixed height to make the menu scrollable
+        menu.setMaximumHeight(300)  # You can adjust this value as needed
+        menu.setMaximumWidth(300)
+    
+        # Add sorting options
+        menu.addAction("Sort Smallest to Largest")
+        menu.addAction("Sort Largest to Smallest")
+        menu.addAction("Clear Filter")
+        menu.addSeparator()
+
+        # Add checkbox options for unique values in the column
+        unique_values = set()  # Use a set to collect unique values
+        for row in range(self.model.rowCount()):
+            value = self.model.item(row, column_index).text()
+            unique_values.add(value)
+    
+        for value in sorted(unique_values):
+            action = menu.addAction(value)
+            action.setCheckable(True)
+            # You can connect these actions to specific slots if you want to handle their toggling
+
+        return menu
+
+    def filter_click(self, column_index):
+        header = self.view.horizontalHeader()
+        menu = self.build_filter_menu(column_index)
+
+        # Temporary show the menu off-screen to calculate its size
+        temp_pos = QPoint(-10000, -10000)
+        menu.move(temp_pos)
+        menu.show()
+        menu_height = menu.height()
+        menu_width = menu.width()
+        menu.hide()
+
+        # Calculate the position for the menu
+        header_rect = header.geometry()
+        pos = self.view.mapToGlobal(QPoint(header.sectionViewportPosition(column_index), header_rect.bottom()))
+
+        # Get the screen geometry
+        screen = QGuiApplication.screenAt(self.window().frameGeometry().center()).geometry()
+
+        # Adjust horizontal position
+        if pos.x() + menu_width > screen.right():
+            pos.setX(screen.right() - menu_width)
+        elif pos.x() < screen.left():
+            pos.setX(screen.left())
+
+        # Adjust vertical position
+        if pos.y() + menu_height > screen.bottom():
+            pos.setY(screen.bottom() - menu_height)
+        elif pos.y() < screen.top():
+            pos.setY(screen.top())
+
+        # Show the menu at the adjusted position
+        menu.exec(pos)
+
     def keyPressEvent(self, event):
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
             self.copy_to_clipboard()
+            
         elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
             self.paste_clipboard()
+            
         elif event.key() == Qt.Key.Key_Delete:
             self.clear_selected_cells()
+            
         elif event.key() == Qt.Key.Key_Enter or event.key() == Qt.Key.Key_Return:
             self.move_to_next_cell()
         else:
             super().keyPressEvent(event)
             
-    def move_to_next_cell(self):
-        current_row = self.currentRow()
-        current_column = self.currentColumn()
-        next_row = current_row + 1
+    def move_to_next_cell(self, horizontal=False): #tab key
+        current = self.view.currentIndex()
+        if horizontal:
+            next_index = self.view.model().index(current.row(), current.column() + 1)
+        else:
+            next_index = self.view.model().index(current.row() + 1, current.column())
+        if next_index.isValid():
+            self.view.setCurrentIndex(next_index)
 
-        if next_row < self.rowCount():
-            self.setCurrentCell(next_row, current_column)
+    def move_to_previous_cell(self): #
+        current = self.view.currentIndex()
+        previous_index = self.view.model().index(current.row(), current.column() - 1)
+        if previous_index.isValid():
+            self.view.setCurrentIndex(previous_index)
             
-        #else:
-            # Optionally add a new row at the end if you've reached the last row
-            #self.insertRow(self.rowCount())
-            #self.setCurrentCell(self.rowCount(), current_column)
-            
-    def clear_selected_cells(self):
-        selected_ranges = self.selectedRanges()
-        for selected_range in selected_ranges:
-            for r in range(selected_range.topRow(), selected_range.bottomRow() + 1):
-                for c in range(selected_range.leftColumn(), selected_range.rightColumn() + 1):
-                    self.setItem(r, c, QTableWidgetItem(""))
-
-
     def copy_to_clipboard(self):
-        selected_range = self.selectedRanges()[0]
-        if selected_range:
-            clipboard_content = ''
-            for row in range(selected_range.topRow(), selected_range.bottomRow() + 1):
-                row_data = []
-                for col in range(selected_range.leftColumn(), selected_range.rightColumn() + 1):
-                    item = self.item(row, col)
-                    row_data.append(item.text() if item else '')
-                clipboard_content += '\t'.join(row_data) + '\n'
-            QApplication.clipboard().setText(clipboard_content)
+        selection = self.view.selectionModel()
+        indexes = selection.selectedIndexes()
+        if not indexes:
+            return
+
+        clipboard_content = ''
+        previous = indexes[0]
+        for i in indexes:
+            if i.row() != previous.row():
+                clipboard_content += '\n'
+            elif i != indexes[0]:
+                clipboard_content += '\t'
+            clipboard_content += i.data()
+            previous = i
+
+        QApplication.clipboard().setText(clipboard_content)
 
     def paste_clipboard(self):
         clipboard = QApplication.clipboard()
@@ -342,22 +460,29 @@ class CustomTableWidget(QTableWidget):
         clipboard_rows = clipboard_content.split('\n')
         clipboard_data = [row.split('\t') for row in clipboard_rows if row]
 
-        # Get the first selected range
-        selected_ranges = self.selectedRanges()
-        if not selected_ranges:
-            return  # No selection, so nothing to paste into
+        # Get the first selected cell or current cell
+        selection = self.view.selectionModel()
+        if selection.hasSelection():
+            start_index = selection.selectedIndexes()[0]
+        else:
+            start_index = self.view.currentIndex()
 
-        selected_range = selected_ranges[0]
+        if not start_index.isValid():
+            return  # No starting point for pasting
 
-        for r in range(selected_range.rowCount()):
-            for c in range(selected_range.columnCount()):
-                clipboard_row = clipboard_data[r % len(clipboard_data)]
-                clipboard_cell = clipboard_row[min(c, len(clipboard_row) - 1)]
-                row_index = selected_range.topRow() + r
-                col_index = selected_range.leftColumn() + c
-                if row_index < self.rowCount() and col_index < self.columnCount():
-                    self.setItem(row_index, col_index, QTableWidgetItem(clipboard_cell))
-                 
+        for r, row in enumerate(clipboard_data):
+            for c, cell in enumerate(row):
+                row_index = start_index.row() + r
+                col_index = start_index.column() + c
+                if row_index < self.model.rowCount() and col_index < self.model.columnCount():
+                    item = QStandardItem(cell)
+                    self.model.setItem(row_index, col_index, item)
+
+    def clear_selected_cells(self):
+        selection = self.view.selectionModel()
+        for index in selection.selectedIndexes():
+            self.model.setItem(index.row(), index.column(), QStandardItem(""))
+                   
 class MyWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -390,9 +515,10 @@ class MyWindow(QMainWindow):
         self.file_menu.addAction(self.import_specs)
 
         #Using CustomTableWidget Class
-        self.table1 = CustomTableWidget(self.tab1)
-        self.table2 = CustomTableWidget(self.tab2)
-        self.table3 = CustomTableWidget(self.tab3)
+        self.table1 = StandardTable(self.tab1)
+        self.table2 = StandardTable(self.tab2)
+        self.table3 = StandardTable(self.tab3)
+        
         # Create a QVBoxLayout for each tab
         self.layout1 = QVBoxLayout(self.tab1)
         self.layout2 = QVBoxLayout(self.tab2)
@@ -467,30 +593,33 @@ class MyWindow(QMainWindow):
     def create_df_from_table(self, table_name):
         # Select the appropriate table based on the table_name
         if table_name == 'tpsl':
-            table_widget = self.table1
+            standard_table = self.table1
 
         elif table_name == 'weld log':
-            table_widget = self.table2
+            standard_table = self.table2
 
         elif table_name == 'nde':
-            table_widget = self.table3
+            standard_table = self.table3
         # Add more conditions here for other tables
         else:
             raise ValueError(f"Unknown table name: {table_name}")
+        
+        model = standard_table.model  # Access the model of the StandardTable
 
-        # Get the number of rows and columns from the table
-        rows = table_widget.rowCount()
-        cols = table_widget.columnCount()
+
+        # Get the number of rows and columns from the model
+        rows = model.rowCount()
+        cols = model.columnCount()
 
         # Extract the header names
-        headers = [table_widget.horizontalHeaderItem(c).text() for c in range(cols)]
+        headers = [model.horizontalHeaderItem(c).text() for c in range(cols)]
 
         # Extract the data from the table
         data = []
         for r in range(rows):
             row_data = []
             for c in range(cols):
-                item = table_widget.item(r, c)
+                item = model.item(r, c)
                 if item and item.text():
                     row_data.append(item.text())
                 else:
@@ -502,7 +631,6 @@ class MyWindow(QMainWindow):
         
         return df
 
-   
     def prepare_payload(self, df, mapping, qb_table, existing_df=None, compare_columns=None):
         # Convert the df columns to field IDs using mapping
         df_mapped = df.rename(columns=mapping)
@@ -558,7 +686,6 @@ class MyWindow(QMainWindow):
         #print(f"Duplicate Map: {duplicate_map}")
 
         return payload, len(payload_data), duplicate_map
-
 
     def push_to_nde(self):
         #Create a dataframe from tab1
@@ -766,23 +893,24 @@ class MyWindow(QMainWindow):
             
             print("\n\n'Welds' table reloaded with updated records...")
 
-    def load_data_into_table(self, table_widget, df):
+    def load_data_into_table(self, standard_table, df):
         print("\n\nLoading Data into Tables")
-        # Set the number of rows and columns in the table
-        table_widget.setRowCount(df.shape[0])
-        table_widget.setColumnCount(df.shape[1])
+        model = standard_table.model  # Access the model of the StandardTable
 
-        # Set the column headers
-        table_widget.setHorizontalHeaderLabels(df.columns.tolist())
+        # Clear existing data from the model
+        model.clear()
 
-        # Populate the table with data
+        # Load the SVG icon
+        icon_path = "assets/filter_icon.svg"
+        icon = QIcon(icon_path)
+        
+        # # Set the column headers
+        model.setHorizontalHeaderLabels(df.columns.tolist())
+        
+        # Populate the model with data
         for i in range(df.shape[0]):
             for j in range(df.shape[1]):
                 value = df.iloc[i, j]
-
-                # Check and handle dictionary-like entries
-                if isinstance(value, dict) and 'value' in value:
-                    value = value['value']  # Extract the integer value
 
                 # Check if the value is numeric and not NaN
                 if pd.notna(value) and isinstance(value, float):
@@ -794,9 +922,21 @@ class MyWindow(QMainWindow):
                 elif pd.isna(value) or value == 'nan':
                     # Replace 'nan' with an empty string
                     value = ''
-        
-                table_widget.setItem(i, j, QTableWidgetItem(str(value)))
+                # Create a QStandardItem for each cell
+                item = QStandardItem(str(value))
+
+                # Add the item to the model
+                model.setItem(i, j, item)
                 
+        # Update the icons for each column header
+        header_view = standard_table.view.horizontalHeader()
+        if isinstance(header_view, CustomHeaderView):
+            for col_number in range(df.shape[1]):
+                header_view.setIconForColumn(col_number)
+                
+        # Redraw the header view
+        standard_table.view.horizontalHeader().viewport().update()
+
     def import_linde_specs(self):
         # Define the path to the workbook
         #job_number, ok = QInputDialog.getText(self, "Input", "Enter Job Number:")

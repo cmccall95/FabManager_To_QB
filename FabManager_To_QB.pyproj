@@ -37,6 +37,7 @@
     </Interpreter>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="CustomTableWidgetClass.txt" />
     <Content Include="ORIGINAL PSUH TO TPSL.txt" />
     <Content Include="specs_map.json" />
     <Content Include="spool_map.json" />

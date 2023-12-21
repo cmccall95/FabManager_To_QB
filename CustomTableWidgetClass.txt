@@ -1,0 +1,70 @@
+class CustomTableWidget(QTableWidget):
+    def keyPressEvent(self, event):
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
+            self.copy_to_clipboard()
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V:
+            self.paste_clipboard()
+        elif event.key() == Qt.Key.Key_Delete:
+            self.clear_selected_cells()
+        elif event.key() == Qt.Key.Key_Enter or event.key() == Qt.Key.Key_Return:
+            self.move_to_next_cell()
+        else:
+            super().keyPressEvent(event)
+            
+    def move_to_next_cell(self):
+        current_row = self.currentRow()
+        current_column = self.currentColumn()
+        next_row = current_row + 1
+
+        if next_row < self.rowCount():
+            self.setCurrentCell(next_row, current_column)
+            
+        #else:
+            # Optionally add a new row at the end if you've reached the last row
+            #self.insertRow(self.rowCount())
+            #self.setCurrentCell(self.rowCount(), current_column)
+            
+    def clear_selected_cells(self):
+        selected_ranges = self.selectedRanges()
+        for selected_range in selected_ranges:
+            for r in range(selected_range.topRow(), selected_range.bottomRow() + 1):
+                for c in range(selected_range.leftColumn(), selected_range.rightColumn() + 1):
+                    self.setItem(r, c, QTableWidgetItem(""))
+
+
+    def copy_to_clipboard(self):
+        selected_range = self.selectedRanges()[0]
+        if selected_range:
+            clipboard_content = ''
+            for row in range(selected_range.topRow(), selected_range.bottomRow() + 1):
+                row_data = []
+                for col in range(selected_range.leftColumn(), selected_range.rightColumn() + 1):
+                    item = self.item(row, col)
+                    row_data.append(item.text() if item else '')
+                clipboard_content += '\t'.join(row_data) + '\n'
+            QApplication.clipboard().setText(clipboard_content)
+
+    def paste_clipboard(self):
+        clipboard = QApplication.clipboard()
+        clipboard_content = clipboard.text()
+
+        # Split clipboard content into rows and cells
+        clipboard_rows = clipboard_content.split('\n')
+        clipboard_data = [row.split('\t') for row in clipboard_rows if row]
+
+        # Get the first selected range
+        selected_ranges = self.selectedRanges()
+        if not selected_ranges:
+            return  # No selection, so nothing to paste into
+
+        selected_range = selected_ranges[0]
+
+        for r in range(selected_range.rowCount()):
+            for c in range(selected_range.columnCount()):
+                clipboard_row = clipboard_data[r % len(clipboard_data)]
+                clipboard_cell = clipboard_row[min(c, len(clipboard_row) - 1)]
+                row_index = selected_range.topRow() + r
+                col_index = selected_range.leftColumn() + c
+                if row_index < self.rowCount() and col_index < self.columnCount():
+                    self.setItem(row_index, col_index, QTableWidgetItem(clipboard_cell))
+                 
