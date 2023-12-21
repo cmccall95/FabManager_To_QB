@@ -1,0 +1,185 @@
+def prepare_payload(self, df, mapping, qb_table, existing_df=None, compare_columns=None):
+        # Convert the df columns to field IDs using mapping
+        df_mapped = df.rename(columns=mapping)
+
+        payload_data = []
+
+        # Check if existing_df is None or empty
+        #print("\n\nEXISTING DF: \n", existing_df)
+        if existing_df is not None and not existing_df.empty:
+            # Create a unique identifier for each row in df_mapped and existing_df based on the compare_columns
+            df_mapped['unique_id'] = df_mapped[compare_columns].astype(str).agg('-'.join, axis=1)
+            existing_df['unique_id'] = existing_df[compare_columns].astype(str).agg('-'.join, axis=1)
+
+            # Make a set of the unique_ids in existing_df for efficient lookup
+            existing_unique_ids = set(existing_df['unique_id'].values)
+
+            duplicate_map = []
+
+            # Iterate over df_mapped and prepare the payload data and duplicate_map
+            for index, row in df_mapped.iterrows():
+                if row['unique_id'] in existing_unique_ids:
+                    # If the row is in existing_df, add to duplicate_map
+                    existing_row = existing_df[existing_df['unique_id'] == row['unique_id']].iloc[0]
+                    duplicate_map.append(f"{existing_row[compare_columns[1]]}:{existing_row['3']}")
+                else:
+                    # If the row is not in existing_df, add to payload
+                    record = {str(field_id): {"value": row[field_id]} for field_id in mapping.values() if field_id in row}
+                    payload_data.append(record)
+        else:
+            # If existing_df is None or empty, add all rows to payload_data
+            duplicate_map = []
+            for index, row in df_mapped.iterrows():
+                record = {str(field_id): {"value": row[field_id]} for field_id in mapping.values() if field_id in row}
+                payload_data.append(record)
+
+        # The final payload
+        payload = {
+            "to": qb_table,
+            "data": payload_data,
+            "fieldsToReturn": [3] + [int(fid) for fid in mapping.values()]
+        }
+
+        # Logging the number of rows processed and ignored
+        print(f"Original row count: {len(df_mapped)}, Payload row count: {len(payload_data)}, Duplicates ignored: {len(duplicate_map)}")
+        #print(f"Duplicate Map: {duplicate_map}")
+
+        return payload, len(payload_data), duplicate_map
+
+##############################################################
+
+
+
+def push_to_tpsl(self):
+        #Create a dataframe from tab1
+        df = self.create_df_from_table('tpsl')
+        # Reduce the dataframe to the first 5 rows
+        #df = df.head(10)
+        print("\n\nPUSH DF:", df)
+
+        # Load the mapping from the JSON file
+        with open('spool_map.json', 'r') as f:
+            mapping = json.load(f)
+
+         #Check if duplicate records exists
+        job_number = self.get_job_number()
+        qb_fields=['3','6','108']
+        existing_records_df = get_table_data(qb_fields, job_number, TPSL_ID)
+
+        payload, row_count, duplicate_map = self.prepare_payload(df, mapping, TPSL_ID, existing_records_df, ['6', '108'])
+        print("\n\nPayload Prepared - 'Spools - TPSL'\n", payload)
+
+        #Abort if no rows
+        if row_count < 1:
+            if duplicate_map:
+                # Convert duplicate_map list to a dictionary
+                duplicate_map_dict = dict(item.split(":") for item in duplicate_map)
+
+                # Add a new column 'TPSL Record' to the DataFrame
+                df['TPSL Record'] = df['Spool'].map(duplicate_map_dict)
+
+                # Reload the table1 with updated DataFrame
+                self.load_data_into_table(self.table1, df)
+                print("\n\n'Spools' table reloaded with updated existing records...\nExcluded Mapping: ", duplicate_map)
+
+                # Update 'Related Record' in table2 (Welds)
+                df_welds = self.create_df_from_table('weld log')
+                df_welds['Related Record'] = df_welds['Spool'].map(duplicate_map_dict)
+
+                # Reload the table2 (Welds) with updated DataFrame
+                self.load_data_into_table(self.table2, df_welds)
+                print("\n\n'Welds' table reloaded with updated existing spool records...")
+
+            error_dialog = QErrorMessage()
+            error_dialog.showMessage('Payload is empty. \nNote: Duplicate records are automatically removed. \n0 Rows added to QuickBase.')
+            error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
+            return
+
+        # Push to QuickBase and capture the response
+        response = self.push_to_qb(payload)
+        
+        # Check if the response status code is 200
+        if response.status_code in [200, 207]:
+            response_data = response.json()
+
+            # Initialize a map to hold the mapping of spool numbers to record IDs
+            spool_to_record_id = {}
+
+                # Handle partial success (207)
+            if response.status_code == 207:
+                if 'lineErrors' in response_data:
+                    line_errors = response_data['lineErrors']
+                    for line, errors in line_errors.items():
+                        # Log the errors along with the corresponding payload data
+                        print(f"Errors on line {line}: {errors}")
+                        print(f"Data on line {line}: {payload['data'][int(line)]}")
+
+            QMessageBox.information(None, 'Success', f'Respond Status: {response.status_code} \n\n({row_count}) records added to QuickBase successfully.')
+
+            
+            if 'metadata' in response_data and 'createdRecordIds' in response_data['metadata']:
+                print("\n\nResponse Status: 200\nRe-Rendering tables with Related Record IDs.")
+                # Extract created Record IDs and corresponding Spool numbers
+                created_record_ids = response_data['metadata']['createdRecordIds']
+                spool_numbers = [record['108']['value'] for record in payload['data']]
+
+                # Map Spool numbers to created Record IDs
+                spool_to_record_id = dict(zip(spool_numbers, created_record_ids))
+            else:
+                # Handle cases where no record IDs are returned
+                spool_to_record_id = {}
+
+            # If duplicate_map has items, convert it to a dictionary and combine it with spool_to_record_id
+            if duplicate_map:
+                # Convert duplicate_map list to a dictionary
+                duplicate_map_dict = dict(item.split(":") for item in duplicate_map)
+                # Combine the two dictionaries, with duplicate_map_dict taking priority
+                combined_record_map = {**spool_to_record_id, **duplicate_map_dict}
+            else:
+                combined_record_map = spool_to_record_id
+
+            # Add a new column 'TPSL Record' to the DataFrame
+            df['TPSL Record'] = df['Spool'].map(combined_record_map)
+
+            # Reload the table1 with updated DataFrame
+            self.load_data_into_table(self.table1, df)
+            print("\n\n'Spools' table reloaded with updated records...\nExcluded Mapping: ", duplicate_map)
+
+            # Update 'Related Record' in table2 (Welds)
+            df_welds = self.create_df_from_table('weld log')
+            df_welds['Related Record'] = df_welds['Spool'].map(combined_record_map)
+
+            with pd.ExcelWriter('output.xlsx') as writer:
+                df_welds.to_excel(writer, sheet_name='Welds')
+                df.to_excel(writer, sheet_name='Spools')
+
+            # Reload the table2 (Welds) with updated DataFrame
+            self.load_data_into_table(self.table2, df_welds)
+            print("\n\n'Welds' table reloaded with updated records...")
+#######################################################
+def load_data_into_table(self, table_widget, df):
+        print("/n/nLoading Data into Tables")
+        # Set the number of rows and columns in the table
+        table_widget.setRowCount(df.shape[0])
+        table_widget.setColumnCount(df.shape[1])
+
+        # Set the column headers
+        table_widget.setHorizontalHeaderLabels(df.columns.tolist())
+
+        # Populate the table with data
+        for i in range(df.shape[0]):
+            for j in range(df.shape[1]):
+                value = df.iloc[i, j]
+        
+                # Check if the value is numeric and not NaN
+                if pd.notna(value) and isinstance(value, float):
+                    # Convert float values to int if they are whole numbers
+                    value = int(value) if value.is_integer() else value
+                elif pd.notna(value) and isinstance(value, int):
+                    # If value is already an integer, do nothing
+                    pass
+                elif pd.isna(value) or value == 'nan':
+                    # Replace 'nan' with an empty string
+                    value = ''
+            
+                table_widget.setItem(i, j, QTableWidgetItem(str(value)))

@@ -6,13 +6,11 @@ from PyQt6.QtWidgets import (
     QFileDialog, QVBoxLayout, QInputDialog, QTableWidget, QTableWidgetItem, 
     QPushButton, QMessageBox, QErrorMessage
     )
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
 import pandas as pd
 from simpledbf import Dbf5
 from dotenv import load_dotenv
-
-
 
 load_dotenv()  # take environment variables from .env.
 from qb_mod import get_table_data, export_weld_log_to_excel
@@ -73,21 +71,29 @@ def transform_linde_specs(original_df, needed_df, job_number):
                 
     return transformed_df
 
-# Function to apply the regex to the 'Ref Drawing' column
+# Function to apply the regex to the 'Ref Drawing' column #Linde: 30497
 def extract_series(ref_drawing):
-    # First pattern: Matches the string within parentheses
-    first_pattern = r'\([^\)]*\)([^\s\.]+)'
-    # Second pattern: Matches the string without parentheses and optional following period/dash with numbers
-    second_pattern = r'(?:\(|\s)(4-\d{2}[A-Z]+\d*)(?:[.-]\d+)?'
-    
-    # Try the first pattern
-    match = re.search(first_pattern, ref_drawing)
-    if match:
-        return match.group(1)
-    
-    # If the first pattern didn't match, try the second one
-    match = re.search(second_pattern, ref_drawing)
-    return match.group(1) if match else ''
+    # Dictionary of patterns with sample strings as keys and tuples as values (pattern, match group)
+    regex_patterns = {
+        "sample1 (Series in parentheses)": (r'\([^\)]*\)([^\s\.]+)', 1),
+        "sample2 (4-XXALPHANUM)": (r'(?:\(|\s)(4-\d{2}[A-Z]+\d*-[A-Z]*\d*)(?=\.)', 1), #sample2 (4-XXALPHANUM)": (r'(?:\(|\s)(4-\d{2}[A-Z]+\d*)(?:[.-]\d+)?', 1),
+        "sample3 (After 'ZL' before '.')": (r'ZL([^-]+-\d+[^.]*)', 1),
+        "sample4 (After 'ZL6-' or 'ZL5-')": (r'(?<=ZL6-)\d+[A-Z]+\d+[A-Z]*\b|(?<=ZL5-)\d+[A-Z]+\d+[A-Z]*\b', 0),
+    }
+
+    # Loop through the dictionary and apply each regex
+    for sample_string, (pattern, m_group) in regex_patterns.items():
+        match = re.search(pattern, ref_drawing)
+        if match:
+            # Extracted series
+            extracted_series = match.group(m_group).strip()
+            # Clean up the extracted series by removing parenthetical content
+            cleaned_series = re.sub(r'\(.*?\)', '', extracted_series).strip()
+            # Return the cleaned series and the pattern that matched
+            return cleaned_series, pattern
+
+    # If no pattern matched, return None
+    return None, None
 
 #Fill blanks in pipe spec
 def fill_blank_pipe_specs(df):
@@ -103,7 +109,7 @@ def fill_blank_pipe_specs(df):
                 df.at[index, 'Pipe Spec'] = match.iloc[0]['Pipe Spec']
     return df
 
-def format_spools_df(df, weld_df, job_number): #Linde Setup
+def format_spools_df(df, weld_df, job_number): #Linde Setup: 30497
     
     df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38' ]].copy()
     df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
@@ -117,12 +123,23 @@ def format_spools_df(df, weld_df, job_number): #Linde Setup
     df['Spool'] = df['Spool'].astype(str).apply(lambda x: re.sub('[^\d]', '', x)).astype(int)
 
     # Extract 'Series' and 'Sheet' from 'Ref Drawing'
-    #df['Series'] = df['Ref Drawing'].apply(lambda x: re.search(r'\)(.*?)\.', x).group(1) if re.search(r'\)(.*?)\.', x) else '')
-    #df['Series'] = df['Ref Drawing'].apply(lambda x: re.search(r'\s(\w+-\w+)', x).group(1) if re.search(r'\s(\w+-\w+)', x) else '')
-    df['Series'] = df['Ref Drawing'].apply(extract_series)
+    df['Series'], df['re Match Pattern'] = zip(*df['Ref Drawing'].apply(extract_series))
+    
+    # Extract 'Sheet' by first checking for digits after a period, then checking for a 3-character string starting with '0' between hyphens
+    def extract_sheet(ref_drawing):
+        # First, try to match three digits after a period
+        match = re.search(r'\.(\d{3})\b', ref_drawing)
+        if match:
+            return int(match.group(1))
+        # If that fails, try to match a 3-character string starting with '0' between hyphens
+        match = re.search(r'-(0\d{2})-', ref_drawing)
+        return int(match.group(1)) if match else None
 
+    df['Sheet'] = df['Ref Drawing'].apply(extract_sheet)
+    
+    #df['Sheet'] = df['Ref Drawing'].apply(lambda x: int(re.search(r'\.(\d{3})\b', x).group(1)) if re.search(r'\.(\d{3})\b', x) else None)
 
-    df['Sheet'] = df['Ref Drawing'].apply(lambda x: int(re.search(r'\.(\d+)$', x).group(1)) if re.search(r'\.(\d+)$', x) else '')
+    #df['Sheet'] = df['Ref Drawing'].apply(lambda x: int(re.search(r'\.(\d+)$', x).group(1)) if re.search(r'\.(\d+)$', x) else '')
 
     # Drop duplicates in weld_df, keeping the row with non-blank 'Pipe Spec' if present
     weld_df = weld_df.sort_values('Pipe Spec', na_position='last').drop_duplicates(subset='Spool', keep='first')
@@ -133,10 +150,7 @@ def format_spools_df(df, weld_df, job_number): #Linde Setup
     # Set 'NDE Group' column equal to 'Series' Removed for temporary update
     df['NDE Group'] = df['Series']
     df['Job'] = job_number
-
-    
-    #print("\n1. ", df)
-
+    print("\n\nFormat 1 df:\n", df)
     return df
 
 def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
@@ -248,6 +262,32 @@ def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
 
     return df
 
+# class CustomHeaderView(QHeaderView):
+#     iconClicked = pyqtSignal(int)  # Signal emitted when an icon is clicked
+
+#     def __init__(self, orientation, parent=None):
+#         super().__init__(orientation, parent)
+#         self.icon = QIcon("assets/filter_icon.svg")
+
+#     def paintSection(self, painter, rect, logicalIndex):
+#         super().paintSection(painter, rect, logicalIndex)
+
+#         # Adjust the position of the icon to the bottom left
+#         icon_size = 20  # Width and height of the icon
+#         padding = 2  # Padding from the bottom
+#         icon_rect = QRect(rect.left() + padding, rect.bottom() - icon_size - padding, icon_size, icon_size)
+#         self.icon.paint(painter, icon_rect)
+
+#     def mousePressEvent(self, event):
+#         super().mousePressEvent(event)
+
+#         # Check if the click event occurred on the icon area
+#         index = self.logicalIndexAt(event.position().toPoint())
+#         icon_rect = QRect(self.sectionViewportPosition(index) + 2, self.height() - 22, 20, 20)  # Bottom-left position
+        
+#         if icon_rect.contains(event.position().toPoint()):
+#             self.iconClicked.emit(index)
+
 class CustomTableWidget(QTableWidget):
     def keyPressEvent(self, event):
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C:
@@ -268,10 +308,11 @@ class CustomTableWidget(QTableWidget):
 
         if next_row < self.rowCount():
             self.setCurrentCell(next_row, current_column)
-        else:
+            
+        #else:
             # Optionally add a new row at the end if you've reached the last row
-            self.insertRow(self.rowCount())
-            self.setCurrentCell(self.rowCount(), current_column)
+            #self.insertRow(self.rowCount())
+            #self.setCurrentCell(self.rowCount(), current_column)
             
     def clear_selected_cells(self):
         selected_ranges = self.selectedRanges()
@@ -316,8 +357,7 @@ class CustomTableWidget(QTableWidget):
                 col_index = selected_range.leftColumn() + c
                 if row_index < self.rowCount() and col_index < self.columnCount():
                     self.setItem(row_index, col_index, QTableWidgetItem(clipboard_cell))
-
-                        
+                 
 class MyWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -420,7 +460,7 @@ class MyWindow(QMainWindow):
         else:
             print("Error: Failed to push records")
 
-        print("\n\nRESPONSE:", response.json())
+        #print("\n\nRESPONSE:", response.json())
 
         return response
 
@@ -470,9 +510,15 @@ class MyWindow(QMainWindow):
         payload_data = []
 
         # Check if existing_df is None or empty
-        print("\n\nEXISTING DF: \n", existing_df)
+        #print("\n\nEXISTING DF: \n", existing_df)
+        # Verify that compare_columns are in df_mapped
+        # for col in compare_columns:
+        #     if col not in df_mapped.columns:
+        #         raise ValueError(f"Column '{col}' not found in DataFrame")
+
         if existing_df is not None and not existing_df.empty:
             # Create a unique identifier for each row in df_mapped and existing_df based on the compare_columns
+            print("\n\n")
             df_mapped['unique_id'] = df_mapped[compare_columns].astype(str).agg('-'.join, axis=1)
             existing_df['unique_id'] = existing_df[compare_columns].astype(str).agg('-'.join, axis=1)
 
@@ -485,8 +531,10 @@ class MyWindow(QMainWindow):
             for index, row in df_mapped.iterrows():
                 if row['unique_id'] in existing_unique_ids:
                     # If the row is in existing_df, add to duplicate_map
+                    # existing_row = existing_df[existing_df['unique_id'] == row['unique_id']].iloc[0]
+                    # duplicate_map.append(f"{existing_row[compare_columns[1]]}:{existing_row['3']}")
                     existing_row = existing_df[existing_df['unique_id'] == row['unique_id']].iloc[0]
-                    duplicate_map.append(f"{existing_row[compare_columns[1]]}:{existing_row['3']}")
+                    duplicate_map.append(f"{existing_row['unique_id']}:{existing_row['3']}")
                 else:
                     # If the row is not in existing_df, add to payload
                     record = {str(field_id): {"value": row[field_id]} for field_id in mapping.values() if field_id in row}
@@ -502,12 +550,12 @@ class MyWindow(QMainWindow):
         payload = {
             "to": qb_table,
             "data": payload_data,
-            "fieldsToReturn": [3] + [int(fid) for fid in mapping.values()]
+            "fieldsToReturn": [3, 6, 108] #+ [int(fid) for fid in mapping.values()]
         }
 
         # Logging the number of rows processed and ignored
         print(f"Original row count: {len(df_mapped)}, Payload row count: {len(payload_data)}, Duplicates ignored: {len(duplicate_map)}")
-        print(f"Duplicate Map: {duplicate_map}")
+        #print(f"Duplicate Map: {duplicate_map}")
 
         return payload, len(payload_data), duplicate_map
 
@@ -544,7 +592,31 @@ class MyWindow(QMainWindow):
     def push_to_weld_log(self):
         #Create a dataframe from tab1
         df = self.create_df_from_table('weld log')
-        print("\n\nPUSH DF: \n", df)
+        
+        
+        # Initialize a list to hold skipped records
+        skipped_records = []
+        
+        # Iterate over the DataFrame to validate 'Related Record' column
+        for index, row in df.iterrows():
+            related_record = row.get('Related Record')
+            try:
+                # Attempt to convert 'Related Record' to an integer
+                int_related_record = int(related_record) if related_record is not None else None
+
+                # Check if conversion is successful and value is non-negative
+                if int_related_record is not None and int_related_record >= 0:
+                    continue  # Valid entry, proceed to next row
+                else:
+                    # Conversion failed or value is negative, skip this row
+                    skipped_records.append((index, related_record))
+                    df.drop(index, inplace=True)  # Remove invalid row from DataFrame
+            except ValueError:
+                # Conversion to integer failed, skip this row
+                skipped_records.append((index, related_record))
+                df.drop(index, inplace=True)  # Remove invalid row from DataFrame
+        
+        print("\n\nDATAFRAME VALID: \n", df)
 
         # Reduce the dataframe to the first 5 rows
         #df = df.head(20)
@@ -561,8 +633,10 @@ class MyWindow(QMainWindow):
             existing_records_df = None
         
         #altered_df = get_table_data()
+        
         payload, row_count, excluded_records = self.prepare_payload(df, mapping, WELD_LOG_ID, existing_records_df, ['6', '15'])
         print("\n\nPayload Prepared - 'Welds - Weld Log'\n", payload)
+        print("\n\nPayload Prepared - 'Welds - Weld Log'\n", existing_records_df)
         #print("--SIMULATED")
 
         #Abort if no rows
@@ -578,13 +652,19 @@ class MyWindow(QMainWindow):
         # Check if the response status code is 200
         if response.status_code == 200:
             QMessageBox.information(None, 'Success', f'Respond Status: 200 \n\n({row_count}) records added to QuickBase successfully.')
+            
+        # Print skipped records if any
+        if skipped_records:
+            print("\nSkipped Records (Invalid Related Records):")
+            for index, invalid_value in skipped_records:
+                print(f"Row {index}, Invalid Value: {invalid_value}")
         
     def push_to_tpsl(self):
         #Create a dataframe from tab1
         df = self.create_df_from_table('tpsl')
         # Reduce the dataframe to the first 5 rows
         #df = df.head(10)
-        print("\n\nPUSH DF:", df)
+        #print("\n\nPUSH DF:", df)
 
         # Load the mapping from the JSON file
         with open('spool_map.json', 'r') as f:
@@ -597,86 +677,85 @@ class MyWindow(QMainWindow):
 
         payload, row_count, duplicate_map = self.prepare_payload(df, mapping, TPSL_ID, existing_records_df, ['6', '108'])
         print("\n\nPayload Prepared - 'Spools - TPSL'\n", payload)
+        
+        df['unique_id'] = df['Job'].astype(str) + '-' + df['Spool'].astype(str)
+
+        # If duplicate_map has items, convert it to a dictionary
+        if duplicate_map:
+            duplicate_map_dict = dict(item.split(":") for item in duplicate_map)
+        else:
+            duplicate_map_dict = {}
+            
+        #Create Welds Dataframe  
+        df_welds = self.create_df_from_table('weld log')
 
         #Abort if no rows
         if row_count < 1:
-            if duplicate_map:
-                # Convert duplicate_map list to a dictionary
-                duplicate_map_dict = dict(item.split(":") for item in duplicate_map)
+            # Update the 'TPSL Record' column using the duplicate_map_dict
+            df['TPSL Record'] = df['unique_id'].map(duplicate_map_dict)
 
-                # Add a new column 'TPSL Record' to the DataFrame
-                df['TPSL Record'] = df['Spool'].map(duplicate_map_dict)
+            # Reload the table1 with updated DataFrame
+            self.load_data_into_table(self.table1, df)
+            print("\n\n'Spools' table reloaded with updated existing records...")
+            #print(f"\n\nDuplicate Map: \n{duplicate_map_dict}")
 
-                # Reload the table1 with updated DataFrame
-                self.load_data_into_table(self.table1, df)
-                print("\n\n'Spools' table reloaded with updated existing records...\nExcluded Mapping: ", duplicate_map)
-
-                # Update 'Related Record' in table2 (Welds)
-                df_welds = self.create_df_from_table('weld log')
-                df_welds['Related Record'] = df_welds['Spool'].map(duplicate_map_dict)
-
-                # Reload the table2 (Welds) with updated DataFrame
-                self.load_data_into_table(self.table2, df_welds)
-                print("\n\n'Welds' table reloaded with updated existing spool records...")
+            # Update the Welds dataframe with record IDs
+            df_welds['unique_id'] = df_welds['Job'].astype(str) + '-' + df_welds['Spool'].astype(str)
+            df_welds['Related Record'] = df_welds['unique_id'].map(duplicate_map_dict)
+            
+            # Reload the table2 (Welds) with updated DataFrame
+            self.load_data_into_table(self.table2, df_welds)
+            print("\n\n'Welds' table reloaded with updated existing records...")
 
             error_dialog = QErrorMessage()
             error_dialog.showMessage('Payload is empty. \nNote: Duplicate records are automatically removed. \n0 Rows added to QuickBase.')
             error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
+            #print(f"\n\nDuplicate Map: \n{duplicate_map_dict}")
             return
-
+        
         # Push to QuickBase and capture the response
         response = self.push_to_qb(payload)
         
         # Check if the response status code is 200
         if response.status_code in [200, 207]:
             response_data = response.json()
-
-            # Initialize a map to hold the mapping of spool numbers to record IDs
-            spool_to_record_id = {}
-
-                # Handle partial success (207)
-            if response.status_code == 207:
-                if 'lineErrors' in response_data:
-                    line_errors = response_data['lineErrors']
-                    for line, errors in line_errors.items():
-                        # Log the errors along with the corresponding payload data
-                        print(f"Errors on line {line}: {errors}")
-                        print(f"Data on line {line}: {payload['data'][int(line)]}")
-
             QMessageBox.information(None, 'Success', f'Respond Status: {response.status_code} \n\n({row_count}) records added to QuickBase successfully.')
 
+             # Initialize a map to hold the mapping of unique identifiers to record IDs
+            unique_id_to_record_id = {}
             
-            if 'metadata' in response_data and 'createdRecordIds' in response_data['metadata']:
-                print("\n\nResponse Status: 200\nRe-Rendering tables with Related Record IDs.")
-                # Extract created Record IDs and corresponding Spool numbers
-                created_record_ids = response_data['metadata']['createdRecordIds']
-                spool_numbers = [record['108']['value'] for record in payload['data']]
+            # Extract data from the response
+            if 'data' in response_data:
+                for item in response_data['data']:
+                    job = item['6']['value']
+                    spool = item['108']['value']
+                    record_id = item['3']
+                    unique_id = f"{job}-{spool}"
+                    unique_id_to_record_id[unique_id] = record_id
 
-                # Map Spool numbers to created Record IDs
-                spool_to_record_id = dict(zip(spool_numbers, created_record_ids))
-            else:
-                # Handle cases where no record IDs are returned
-                spool_to_record_id = {}
-
-            # If duplicate_map has items, convert it to a dictionary and combine it with spool_to_record_id
+            # If duplicate_map has items, convert it to a dictionary
             if duplicate_map:
-                # Convert duplicate_map list to a dictionary
                 duplicate_map_dict = dict(item.split(":") for item in duplicate_map)
-                # Combine the two dictionaries, with duplicate_map_dict taking priority
-                combined_record_map = {**spool_to_record_id, **duplicate_map_dict}
             else:
-                combined_record_map = spool_to_record_id
+                duplicate_map_dict = {}
 
-            # Add a new column 'TPSL Record' to the DataFrame
-            df['TPSL Record'] = df['Spool'].map(combined_record_map)
+            # Create a unique identifier in the original dataframe
+            df['unique_id'] = df['Job'].astype(str) + '-' + df['Spool'].astype(str)
+            
+            # Combine the unique_id_to_record_id and duplicate_map_dict for the final mapping
+            combined_record_map = {**unique_id_to_record_id, **duplicate_map_dict}
+            
+            # Map the record IDs to the DataFrame using the unique identifier
+            df['TPSL Record'] = df['unique_id'].map(combined_record_map)
 
-            # Reload the table1 with updated DataFrame
             self.load_data_into_table(self.table1, df)
-            print("\n\n'Spools' table reloaded with updated records...\nExcluded Mapping: ", duplicate_map)
+            # print("\n\n'Spools' table reloaded with updated records...\nExcluded Mapping: ", duplicate_map)
 
             # Update 'Related Record' in table2 (Welds)
-            df_welds = self.create_df_from_table('weld log')
-            df_welds['Related Record'] = df_welds['Spool'].map(combined_record_map)
+            df_welds['unique_id'] = df_welds['Job'].astype(str) + '-' + df_welds['Spool'].astype(str)
+            df_welds['Related Record'] = df_welds['unique_id'].map(combined_record_map)
+
+            #df_welds['Related Record'] = df_welds['Spool'].map(combined_record_map)
 
             with pd.ExcelWriter('output.xlsx') as writer:
                 df_welds.to_excel(writer, sheet_name='Welds')
@@ -684,10 +763,11 @@ class MyWindow(QMainWindow):
 
             # Reload the table2 (Welds) with updated DataFrame
             self.load_data_into_table(self.table2, df_welds)
+            
             print("\n\n'Welds' table reloaded with updated records...")
 
     def load_data_into_table(self, table_widget, df):
-        print("/n/nLoading Data into Tables")
+        print("\n\nLoading Data into Tables")
         # Set the number of rows and columns in the table
         table_widget.setRowCount(df.shape[0])
         table_widget.setColumnCount(df.shape[1])
@@ -699,7 +779,11 @@ class MyWindow(QMainWindow):
         for i in range(df.shape[0]):
             for j in range(df.shape[1]):
                 value = df.iloc[i, j]
-        
+
+                # Check and handle dictionary-like entries
+                if isinstance(value, dict) and 'value' in value:
+                    value = value['value']  # Extract the integer value
+
                 # Check if the value is numeric and not NaN
                 if pd.notna(value) and isinstance(value, float):
                     # Convert float values to int if they are whole numbers
@@ -710,10 +794,9 @@ class MyWindow(QMainWindow):
                 elif pd.isna(value) or value == 'nan':
                     # Replace 'nan' with an empty string
                     value = ''
-            
+        
                 table_widget.setItem(i, j, QTableWidgetItem(str(value)))
-
-
+                
     def import_linde_specs(self):
         # Define the path to the workbook
         #job_number, ok = QInputDialog.getText(self, "Input", "Enter Job Number:")
