@@ -4,12 +4,14 @@ import re, os, sys, requests, json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QMenuBar, QMenu,
     QFileDialog, QVBoxLayout, QInputDialog, QTableWidget, QTableWidgetItem, 
-    QPushButton, QMessageBox, QErrorMessage, QHeaderView, QTableView
-    )
-from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication, QColor
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint
+    QPushButton, QMessageBox, QErrorMessage, QHeaderView, QTableView, QWidgetAction, QListWidget,
+   QLineEdit, QListWidgetItem, QLabel, QCheckBox)
+from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication, QColor, QFont
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint, QTimer
 import pandas as pd
 from simpledbf import Dbf5
+from openpyxl import load_workbook
+#from openpyxl.utils.exceptions import FileInUseError
 from dotenv import load_dotenv
 
 load_dotenv()  # take environment variables from .env.
@@ -150,7 +152,7 @@ def format_spools_df(df, weld_df, job_number): #Linde Setup: 30497
     # Set 'NDE Group' column equal to 'Series' Removed for temporary update
     df['NDE Group'] = df['Series']
     df['Job'] = job_number
-    print("\n\nFormat 1 df:\n", df)
+    #print("\n\nFormat 1 df:\n", df)
     return df
 
 def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
@@ -159,11 +161,32 @@ def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
     df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
                        'AREA', 'SP36': 'Ref Drawing', 'SP38': 'Spool/Piece Mark' }, inplace=True)
 
+    # Initialize a list to store non-convertible values
+    non_convertible_values = []
+    
+    # Function to try conversion and catch errors
+    def try_convert_to_int(value):
+        try:
+            return int(float(value.lstrip('0')))
+        except ValueError:
+            non_convertible_values.append(value)
+            return None  # Or a placeholder value indicating conversion failure
+
+    # Apply conversion with error handling
+    df['Spool'] = df['Spool'].astype(str).apply(try_convert_to_int)
+
+    # Print the non-convertible values
+    if non_convertible_values:
+        print(f"({len(non_convertible_values)})Non-convertible values in 'Spool' column: {non_convertible_values}")
+
+    # Drop rows with non-convertible values
+    df = df.dropna(subset=['Spool'])
+
     # Remove the first row
     df = df.iloc[1:]
 
     # Remove leading zeroes from 'CONTROLNO'
-    df['Spool'] = df['Spool'].astype(str).str.lstrip('0').astype(int)
+    #df['Spool'] = df['Spool'].astype(str).str.lstrip('0').astype(int) Handled in function
 
     # Ensure 'Ref Drawing' is of string type
     df['Ref Drawing'] = df['Ref Drawing'].astype(str)
@@ -220,14 +243,69 @@ def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
 
     return df
 
-def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
-    # Transformations on welds_df
+# def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
+#     # Transformations on welds_df
+#     df = df.copy()
+
+#     # Remove leading zeroes from 'CONTROLNO'
+#     df['CONTROLNO'] = df['CONTROLNO'].astype(str).str.lstrip('0').astype(int)
+    
+#     # Create 'Weld_ID' column
+#     df['Weld ID'] = df['CONTROLNO'].astype(str) + '-' + df['WELDLABEL'].astype(str)
+    
+#     # Remove '"' from 'SIZE_I' and ensure no leading or trailing zeroes
+#     df['SIZE_I'] = df['SIZE_I'].str.replace('"', '').astype(float).astype(str).str.strip('0').str.rstrip('.')
+    
+#     # Replace 'BR' with 'BRANCH' in 'GENRE'
+#     df['GENRE'] = df['GENRE'].replace('BR', 'BRANCH')
+    
+#     # Add new columns 'qb_id' and 'JOB' with empty values
+#     df['Related Record'] = ''
+#     df['Job'] = job_number
+
+#     # Record initial row count
+#     initial_row_count = df.shape[0]
+
+#     # Function to check if a value is NaN, blank or a variation of "nan"
+#     def is_invalid(value):
+#         value_str = str(value).strip().lower()
+#         return pd.isna(value) or value_str == '' or value_str == 'nan'
+
+#     # Drop rows where 'CONTROLNO' or 'WELDLABEL' is invalid
+#     df = df[~df['CONTROLNO'].apply(is_invalid) & ~df['WELDLABEL'].apply(is_invalid)]
+
+#     # Calculate the number of rows dropped
+#     final_row_count = df.shape[0]
+#     rows_dropped = initial_row_count - final_row_count
+#     print(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
+
+#     # Select only the desired columns and rename them
+#     df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'CONTROLNO', 'WELDLABEL']]
+#     df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'SPEC': 'Pipe Spec', 'CONTROLNO': 'Spool'}, inplace=True)
+
+#     return df
+
+def format_welds_df(df, job_number):
     df = df.copy()
 
-    # Remove leading zeroes from 'CONTROLNO'
+    # Function to check if CONTROLNO can be converted to an integer
+    def is_convertible_to_int(value):
+        try:
+            int(value)
+            return True
+        except ValueError:
+            return False
+
+    # Apply the function to create a mask for rows with valid CONTROLNO
+    valid_controlno_mask = df['CONTROLNO'].astype(str).str.lstrip('0').apply(is_convertible_to_int)
+
+    # Filter the DataFrame based on the mask
+    df = df[valid_controlno_mask]
+
+    # Now it's safe to convert CONTROLNO to int
     df['CONTROLNO'] = df['CONTROLNO'].astype(str).str.lstrip('0').astype(int)
     
-    # Create 'Weld_ID' column
+    # Create 'Weld ID' column
     df['Weld ID'] = df['CONTROLNO'].astype(str) + '-' + df['WELDLABEL'].astype(str)
     
     # Remove '"' from 'SIZE_I' and ensure no leading or trailing zeroes
@@ -248,8 +326,8 @@ def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
         value_str = str(value).strip().lower()
         return pd.isna(value) or value_str == '' or value_str == 'nan'
 
-    # Drop rows where 'CONTROLNO' or 'WELDLABEL' is invalid
-    df = df[~df['CONTROLNO'].apply(is_invalid) & ~df['WELDLABEL'].apply(is_invalid)]
+    # Drop rows where 'WELDLABEL' is invalid
+    df = df[~df['WELDLABEL'].apply(is_invalid)]
 
     # Calculate the number of rows dropped
     final_row_count = df.shape[0]
@@ -262,8 +340,80 @@ def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
 
     return df
 
+def pre_check(df, required_columns, integer_columns=[], hyphen_columns=[]):
+    df['Error'] = ''
+    df['Error Description'] = ''
+    df['Comments'] = ''
+    
+    # Check for specific columns not being blank
+    for column in required_columns:
+        if column in df.columns:
+            df.loc[df[column].isnull() | (df[column] == ''), 'Error'] = True
+            df.loc[df[column].isnull() | (df[column] == ''), 'Error Description'] += f'{column} is blank; '
+
+    # Check for columns that must end with a hyphen
+    for column in hyphen_columns:
+        if column in df.columns:
+            df.loc[~df[column].astype(str).str.endswith('-'), 'Error'] = True
+            df.loc[~df[column].astype(str).str.endswith('-'), 'Error Description'] += f'{column} does not end with "-"; '
+            
+    # Check and update 'Sheet' column if it contains 'VOID'
+    if 'Sheet' in df.columns:
+        #contains_void_mask = df['Sheet'].str.contains('VOID', case=False, na=False)
+        contains_void_mask = df['Sheet'].astype(str).str.contains('VOID', case=False, na=False)
+        df.loc[contains_void_mask, 'Comments'] = "This Spool has been marked as 'VOID'."
+        #df.loc[contains_void_mask, 'Sheet'] = df.loc[contains_void_mask, 'Sheet'].str.replace('VOID', '', case=False).str.strip()
+        df.loc[contains_void_mask, 'Sheet'] = df.loc[contains_void_mask, 'Sheet'].astype(str).str.replace('VOID', '', case=False).str.strip()
+
+    # Check for columns that must be integers
+    for column in integer_columns:
+        if column in df.columns:
+            df.loc[~df[column].fillna('0').astype(str).str.isdigit(), 'Error'] = True
+            df.loc[~df[column].fillna('0').astype(str).str.isdigit(), 'Error Description'] += f'{column} is not an integer; '
+
+    # Check for 'Nan' or 'nan' in any column
+    for col in df.columns:
+        # Check if the column type is string; if so, then perform the 'Nan' check
+        if pd.api.types.is_string_dtype(df[col]):
+            df.loc[df[col].str.lower() == 'nan', 'Error'] = True
+            df.loc[df[col].str.lower() == 'nan', 'Error Description'] += f'{col} has Nan; '
+        # For non-string columns, check if they are not null before converting to string
+        else:
+            df.loc[df[col].notnull() & (df[col].astype(str).str.lower() == 'nan'), 'Error'] = True
+            df.loc[df[col].notnull() & (df[col].astype(str).str.lower() == 'nan'), 'Error Description'] += f'{col} has Nan; '
+
+    return df
+
+def post_check(df, required_columns=[], integer_columns=[], invalid_format_columns=[]):
+    # Assuming 'Error' and 'Error Description' columns already exist
+    # If not, uncomment the following lines
+    # df['Error'] = ''
+    # df['Error Description'] = ''
+
+    # Check for required columns being blank
+    for column in required_columns:
+        if column in df.columns:
+            df.loc[df[column].isnull() | (df[column] == ''), 'Error'] = True
+            df.loc[df[column].isnull() | (df[column] == ''), 'Error Description'] += f'{column} is blank; '
+
+    # Check for columns that must be integers
+    for column in integer_columns:
+        if column in df.columns:
+            df.loc[~df[column].fillna('0').astype(str).str.isdigit(), 'Error'] = True
+            df.loc[~df[column].fillna('0').astype(str).str.isdigit(), 'Error Description'] += f'{column} is not an integer; '
+
+    # Check for invalid formats in specified columns
+    for column in invalid_format_columns:
+        if column in df.columns:
+            invalid_format_condition = df[column].astype(str).str.contains('value:|{|}', regex=True)
+            df.loc[invalid_format_condition, 'Error'] = True
+            df.loc[invalid_format_condition, 'Error Description'] += f'{column} has invalid format; '
+
+    return df
+
 class CustomHeaderView(QHeaderView):
     iconClicked = pyqtSignal(int)  # Signal emitted when an icon is clicked
+    filterRequested = pyqtSignal(int)  # Signal emitted when filtering is requested
 
     def __init__(self, orientation, parent=None):
         super().__init__(orientation, parent)
@@ -280,12 +430,12 @@ class CustomHeaderView(QHeaderView):
 
     def setIconForColumn(self, col):
         icon = QIcon("assets/filter_icon.svg")
-        #self.model().setHeaderData(col, Qt.Orientation.Horizontal, icon, Qt.ItemDataRole.DecorationRole)
+        self.model().setHeaderData(col, Qt.Orientation.Horizontal, icon, Qt.ItemDataRole.DecorationRole) #Actually makes the icon appear but is non adjustable
 
     def paintSection(self, painter, rect, logicalIndex):
         super().paintSection(painter, rect, logicalIndex)
 
-        print("PaintSection has been called")
+        #print("PaintSection has been called")
         # Ensure icon is loaded
         if self.icon.isNull():
             print("Icon is not valid.")
@@ -315,27 +465,39 @@ class CustomHeaderView(QHeaderView):
         
         if icon_rect.contains(event.position().toPoint()):
             self.iconClicked.emit(index)
+            
+    def contextMenuEvent(self, event):
+        index = self.logicalIndexAt(event.pos())
+        column_name = self.model().headerData(index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
+        menu = QMenu(self)
+        filter_action = QAction(f"Filter Column: {column_name}", self)
+        menu.addAction(filter_action)
+
+        filter_action.triggered.connect(lambda: self.filterRequested.emit(index))
+        
+        menu.exec(event.globalPos())  # Display the context menu at the global position
 
 class StandardTable(QWidget):
     def __init__(self, parent=None):  # Add parent=None to accept an optional parent argument
         super().__init__(parent)  # Pass the parent to the QWidget constructor
-        self.layout = QVBoxLayout(self)
+        self.resetFilters()  # Reset filters on initialization
         
-        # Create a "Build RT Report" button
-        #self.export_excel_button = QPushButton("Export Table", self)
-        # self.rt_report_button.clicked.connect(self.build_rt)  # Connect the button to the build_rt function
-        #self.layout.addWidget(self.export_excel_button)
+        self.layout = QVBoxLayout(self)
         
         # Create a model and view for the standard table
         self.model = QStandardItemModel()
         self.view = QTableView(self)
         self.view.setModel(self.model)
+        
+        self.appliedFilters = {}  # Dictionary to store applied filters
+        self.loadFilters()  # Load existing filters on initialization
 
         # Set the custom header view for the table
         header_view = CustomHeaderView(Qt.Orientation.Horizontal, self.view)
         self.view.setHorizontalHeader(header_view)
         
         header_view.iconClicked.connect(self.filter_click)
+        header_view.filterRequested.connect(self.filter_click)
         
         # Set up the QTableView
         # self.view.setEditTriggers(QTableView.NoEditTriggers)  # Optional: make cells not editable
@@ -343,32 +505,197 @@ class StandardTable(QWidget):
 
         self.layout.addWidget(self.view)
         
+    def resetFilters(self):
+        print("Filters Reset - StandardTableClass")
+        self.appliedFilters = {}  # Clear the applied filters dictionary
+        if os.path.exists("filters.json"):
+            os.remove("filters.json")  # Remove the filters.json file if it exists
+        
     def build_filter_menu(self, column_index):
-        """Build and return a QMenu for the filter options."""
         menu = QMenu(self)
-    
-        # Set a fixed height to make the menu scrollable
-        menu.setMaximumHeight(300)  # You can adjust this value as needed
-        menu.setMaximumWidth(300)
-    
-        # Add sorting options
-        menu.addAction("Sort Smallest to Largest")
-        menu.addAction("Sort Largest to Smallest")
-        menu.addAction("Clear Filter")
-        menu.addSeparator()
 
-        # Add checkbox options for unique values in the column
-        unique_values = set()  # Use a set to collect unique values
+        # Custom widget action for the list
+        widgetAction = QWidgetAction(menu)
+        containerWidget = QWidget()
+        layout = QVBoxLayout(containerWidget)
+        
+        # Retrieve and display the column name in bold
+        column_name = self.model.headerData(column_index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
+        columnNameLabel = QLabel(column_name)
+        boldFont = QFont()
+        boldFont.setBold(True)
+        columnNameLabel.setFont(boldFont)
+        layout.addWidget(columnNameLabel)
+
+        # Optional search field
+        searchEdit = QLineEdit()
+        searchEdit.setPlaceholderText("Search...")
+        layout.addWidget(searchEdit)
+        
+        # "Select All" checkbox
+        selectAllCheckbox = QCheckBox("Select All")
+        selectAllCheckbox.setCheckState(Qt.CheckState.Checked)  # Set the initial state to Checked
+        #selectAllCheckbox.setTristate(False)  # Enable tri-state for partial selections
+        layout.addWidget(selectAllCheckbox)
+
+        # List widget for the values
+        listWidget = QListWidget()
+        layout.addWidget(listWidget)
+        widgetAction.setDefaultWidget(containerWidget)
+
+        # Populate list with sorted unique values
+        unique_values = set()
         for row in range(self.model.rowCount()):
             value = self.model.item(row, column_index).text()
             unique_values.add(value)
-    
-        for value in sorted(unique_values):
-            action = menu.addAction(value)
-            action.setCheckable(True)
-            # You can connect these actions to specific slots if you want to handle their toggling
+
+        sorted_values = sorted(unique_values, key=self.alphanumeric_key)
+        for value in sorted_values:
+            item = QListWidgetItem(value)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            listWidget.addItem(item)
+            
+        # Additional button for adding to filter
+        addToFilterButton = QPushButton("Add to Filter")
+        layout.addWidget(addToFilterButton)
+
+        # Ok and Cancel buttons
+        okButton = QPushButton("Apply")
+        cancelButton = QPushButton("Cancel")
+        layout.addWidget(okButton)
+        layout.addWidget(cancelButton)
+        
+        # Connect the searchEdit signal
+        searchEdit.textChanged.connect(lambda text: self.filterList(listWidget, text))
+        
+        # Set the initial state of selectAllCheckbox based on the items
+        #self.updateSelectAllState(listWidget, selectAllCheckbox)
+        
+        # Connect the checkbox signal with a lambda function to pass the correct state
+        #selectAllCheckbox.stateChanged.connect(lambda state=selectAllCheckbox.checkState(): self.selectAllItems(listWidget, state, False))
+        
+        # Inside build_filter_menu method
+        selectAllCheckbox.stateChanged.connect(lambda state: self.onSelectAllStateChanged(listWidget, state))
+        #selectAllCheckbox.stateChanged.connect(lambda state: self.onSelectAllStateChanged(listWidget, state, selectAllCheckbox))
+
+        # Connect button signals
+        okButton.clicked.connect(lambda: self.applyFilter(listWidget, column_index, False))  # Replace menu.close with applyFilter
+        cancelButton.clicked.connect(menu.close)
+        addToFilterButton.clicked.connect(lambda: self.applyFilter(listWidget, column_index, True))  # Keep the dialog open
+        cancelButton.clicked.connect(menu.close)
+
+        menu.addAction(widgetAction)
+        menu.addSeparator()
+        menu.addAction("Sort Smallest to Largest")
+        menu.addAction("Sort Largest to Smallest")
+        menu.addAction("Clear Filter")
 
         return menu
+    
+    def saveFilters(self):
+        with open("filters.json", "w") as file:
+            json.dump(self.appliedFilters, file)
+            print("Filters Added")
+
+    def loadFilters(self):
+        try:
+            with open("filters.json", "r") as file:
+                self.appliedFilters = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.appliedFilters = {}
+    
+    def applyFilter(self, listWidget, column_index, keepOpen):
+        selected_values = [listWidget.item(i).text() for i in range(listWidget.count()) if listWidget.item(i).checkState() == Qt.CheckState.Checked]
+        self.appliedFilters[column_index] = selected_values
+        self.saveFilters()
+
+        if not keepOpen:
+            self.sender().parent().close()  # Close the menu if not adding to filter
+
+    def filterList(self, listWidget, text):
+        print("\nTriggered Filter Search")
+        for i in range(listWidget.count()):
+            item = listWidget.item(i)
+            item.setHidden(text.lower() not in item.text().lower())
+            
+    def alphanumeric_key(self, s):
+        """
+        Generate a key for sorting strings that may contain numbers (including floats).
+        """
+        def convert(text):
+            try:
+                return float(text)
+            except ValueError:
+                return text.lower()
+    
+        # Adjust the regular expression to capture floating-point numbers starting with a dot
+        return [convert(c) for c in re.split('(\d+\.\d+|\.\d+|\d+)', s)]
+    
+    def updateSelectAllCheckboxState(self, listWidget, selectAllCheckbox):
+        total_visible_items = sum(1 for i in range(listWidget.count()) if not listWidget.item(i).isHidden())
+        checked_items = sum(listWidget.item(i).checkState() == Qt.CheckState.Checked for i in range(listWidget.count()) if not listWidget.item(i).isHidden())
+
+        if checked_items == total_visible_items:
+            selectAllCheckbox.setCheckState(Qt.CheckState.Checked)
+        elif checked_items == 0:
+            selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
+        else:
+            selectAllCheckbox.setCheckState(Qt.CheckState.PartiallyChecked)
+
+
+    def onSelectAllStateChanged(self, listWidget, state):
+        print(f"\nonSelectAllStateChanged Triggered. State: {state}")
+        
+        selectAllCheckbox = self.sender()  # This will be the selectAllCheckbox that triggered the signal
+        
+        # Correctly determine new_state based on the received state value
+        new_state = Qt.CheckState.Checked if state == 2 else Qt.CheckState.Unchecked
+        print(f"New State: {new_state}")
+        
+        self.updateListWidgetItems(listWidget, new_state, selectAllCheckbox)
+
+    def updateListWidgetItems(self, listWidget, new_state, selectAllCheckbox):
+        print("Updating List Widget Items")
+        listWidget.blockSignals(True)
+        for i in range(listWidget.count()):
+            item = listWidget.item(i)
+            if not item.isHidden():
+                print(f"Item {i} CheckState: {item.checkState()} -> {new_state}")
+                item.setCheckState(new_state)
+                # Connect item check state change to updateSelectAllCheckboxState
+                item.setCheckState.connect(lambda: self.updateSelectAllCheckboxState(listWidget, selectAllCheckbox))
+                
+        listWidget.blockSignals(False)
+
+
+    # def selectAllItems(self, listWidget, state, updateCheckboxState=True):
+    #     print(f"\nSelectAllItems Triggered. State: {state}")
+    #     listWidget.blockSignals(True)
+
+    #     new_state = Qt.CheckState.Checked if state == Qt.CheckState.Checked else Qt.CheckState.Unchecked
+
+    #     for i in range(listWidget.count()):
+    #         item = listWidget.item(i)
+    #         if not item.isHidden():
+    #             item.setCheckState(new_state)
+
+    #     listWidget.blockSignals(False)
+    #     if updateCheckboxState:
+    #         self.updateSelectAllState(listWidget, self.sender())
+
+    # def updateSelectAllState(self, listWidget, selectAllCheckbox):
+    #     visible_count = sum(1 for i in range(listWidget.count()) if not listWidget.item(i).isHidden())
+    #     checked_count = sum(not listWidget.item(i).isHidden() and listWidget.item(i).checkState() == Qt.CheckState.Checked for i in range(listWidget.count()))
+
+    #     print(f"\nupdateSelectAllState Triggered\nVisible: {visible_count}\nChecked Count: {checked_count}")
+
+    #     if checked_count == 0:
+    #         selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
+    #     elif checked_count == visible_count:
+    #         selectAllCheckbox.setCheckState(Qt.CheckState.Checked)
+    #     else:
+    #         selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
 
     def filter_click(self, column_index):
         header = self.view.horizontalHeader()
@@ -507,10 +834,15 @@ class MyWindow(QMainWindow):
         self.file_menu = QMenu("File", self.menubar)
         self.menubar.addMenu(self.file_menu)
         
+        self.update_job = QAction("Update Job Number", self)
         self.import_action = QAction("Import .dbf Files", self)
         self.import_specs = QAction("Import Linde Specs", self)
+        
+        self.update_job.triggered.connect(self.set_job_number)
         self.import_action.triggered.connect(self.import_dbf_welds)
         self.import_specs.triggered.connect(self.import_linde_specs)
+        
+        self.file_menu.addAction(self.update_job)
         self.file_menu.addAction(self.import_action)
         self.file_menu.addAction(self.import_specs)
 
@@ -519,6 +851,9 @@ class MyWindow(QMainWindow):
         self.table2 = StandardTable(self.tab2)
         self.table3 = StandardTable(self.tab3)
         
+        #Clear/Reset Filters
+        self.table1.resetFilters()
+        
         # Create a QVBoxLayout for each tab
         self.layout1 = QVBoxLayout(self.tab1)
         self.layout2 = QVBoxLayout(self.tab2)
@@ -526,19 +861,29 @@ class MyWindow(QMainWindow):
         
         # Create "Push to QuickBase" button for each tab
         self.push_to_qb_button1 = QPushButton("Push Spools to QuickBase", self.tab1)
+        self.export_button1 = QPushButton("Export", self.tab1)
         self.push_to_qb_button2 = QPushButton("Push Welds to QuickBase", self.tab2)
+        self.export_button2 = QPushButton("Export", self.tab1)
         self.push_to_qb_button3 = QPushButton("Push NDE Specs to QuickBase", self.tab3)
 
         #Connect Buttons
         self.push_to_qb_button1.clicked.connect(self.push_to_tpsl)
+        self.export_button1.clicked.connect(lambda: self.export_table_to_excel('tpsl'))
+        
         self.push_to_qb_button2.clicked.connect(self.push_to_weld_log)
+        self.export_button2.clicked.connect(lambda: self.export_table_to_excel('weld log'))
+        
         self.push_to_qb_button3.clicked.connect(self.push_to_nde)
 
         # Add QTableWidget and button to the layout for each tab
         self.layout1.addWidget(self.push_to_qb_button1, stretch=0)  # No extra space to button
+        self.layout1.addWidget(self.export_button1, stretch=0)  # No extra space to button
         self.layout1.addWidget(self.table1, stretch=1)             # All extra space to table
+        
         self.layout2.addWidget(self.push_to_qb_button2, stretch=0)
+        self.layout2.addWidget(self.export_button2, stretch=0)
         self.layout2.addWidget(self.table2, stretch=1)
+        
         self.layout3.addWidget(self.push_to_qb_button3, stretch=0)
         self.layout3.addWidget(self.table3, stretch=1)
 
@@ -556,6 +901,8 @@ class MyWindow(QMainWindow):
                 # Ensure job number ends with '-'
                 job_number = job_number if job_number.endswith('-') else job_number + '-'
                 self.current_job_number = job_number
+                #Clear/Reset Filters
+                self.table1.resetFilters()
                 return job_number
             else:
                 response = QMessageBox.question(self, "No Job Number", "You didn't enter a job number. Do you want to try again?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
@@ -564,6 +911,56 @@ class MyWindow(QMainWindow):
 
     def get_job_number(self):
         return self.current_job_number  # Retrieve the stored job number
+    
+    def confirm_push_to_quickbase(self, table): #Allow confirm
+        job_number = self.get_job_number()
+        message = f"Are you sure you want to push these records to QuickBase for Job '{job_number}'?"
+    
+        reply = QMessageBox.question(self, f"{job_number} - Confirm Push - {table}", message, 
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel, 
+                                     QMessageBox.StandardButton.Cancel)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            #return True
+            return self.show_countdown(5)  # Countdown duration in seconds
+        else:
+            return False
+    
+    def show_countdown(self, duration):
+        self.countdown = duration
+        self.msg = QMessageBox(self)
+        self.msg.setIcon(QMessageBox.Icon.Information)
+        self.msg.setWindowTitle("Countdown")
+        self.msg.setText(f"Proceeding in {self.countdown} seconds...\nClick Cancel to abort.")
+        self.msg.setStandardButtons(QMessageBox.StandardButton.Cancel)
+        self.msg.buttonClicked.connect(self.abort_countdown)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(lambda: self.update_countdown())
+        self.timer.start(1000)
+
+        result = self.msg.exec()
+        self.timer.stop()
+
+        if result == QMessageBox.StandardButton.Cancel:
+            QMessageBox.information(self, "Aborted", "Push Aborted")
+            return False
+        elif self.countdown <= 0:
+            return True
+        else:
+            return False
+
+    def update_countdown(self):
+        self.countdown -= 1
+        if self.countdown <= 0:
+            self.msg.done(0)
+        else:
+            self.msg.setText(f"Proceeding in {self.countdown} seconds...\nClick Cancel to abort.")
+
+    def abort_countdown(self, i):
+        self.timer.stop()
+        self.countdown = 0
+        self.msg.done(QMessageBox.StandardButton.Cancel)
 
     def push_to_qb(self, payload):
         print("\n\n>>>Pushing to QB")
@@ -606,7 +1003,6 @@ class MyWindow(QMainWindow):
         
         model = standard_table.model  # Access the model of the StandardTable
 
-
         # Get the number of rows and columns from the model
         rows = model.rowCount()
         cols = model.columnCount()
@@ -646,7 +1042,6 @@ class MyWindow(QMainWindow):
 
         if existing_df is not None and not existing_df.empty:
             # Create a unique identifier for each row in df_mapped and existing_df based on the compare_columns
-            print("\n\n")
             df_mapped['unique_id'] = df_mapped[compare_columns].astype(str).agg('-'.join, axis=1)
             existing_df['unique_id'] = existing_df[compare_columns].astype(str).agg('-'.join, axis=1)
 
@@ -700,9 +1095,7 @@ class MyWindow(QMainWindow):
             mapping = json.load(f)
 
         payload, row_count, excluded_records = self.prepare_payload(df, mapping, JOB_NDE)
-        print("\n\nPayload Prepared - 'NDE - JOB LOT NDE'\n", payload)
-
-        print("--SIMULATED")
+        #print("\n\nPayload Prepared - 'NDE - JOB LOT NDE'\n", payload)
 
         ## Push to QuickBase and capture the response
         #response = self.push_to_qb(payload)
@@ -717,9 +1110,11 @@ class MyWindow(QMainWindow):
         #    print("Bad Response:'n", response)
 
     def push_to_weld_log(self):
+        if not self.confirm_push_to_quickbase("Welds"):
+            return  # Immediately return if the user decides not to proceed or cancels during countdown     
+
         #Create a dataframe from tab1
         df = self.create_df_from_table('weld log')
-        
         
         # Initialize a list to hold skipped records
         skipped_records = []
@@ -743,7 +1138,7 @@ class MyWindow(QMainWindow):
                 skipped_records.append((index, related_record))
                 df.drop(index, inplace=True)  # Remove invalid row from DataFrame
         
-        print("\n\nDATAFRAME VALID: \n", df)
+        #print("\n\nDATAFRAME VALID: \n", df)
 
         # Reduce the dataframe to the first 5 rows
         #df = df.head(20)
@@ -762,8 +1157,8 @@ class MyWindow(QMainWindow):
         #altered_df = get_table_data()
         
         payload, row_count, excluded_records = self.prepare_payload(df, mapping, WELD_LOG_ID, existing_records_df, ['6', '15'])
-        print("\n\nPayload Prepared - 'Welds - Weld Log'\n", payload)
-        print("\n\nPayload Prepared - 'Welds - Weld Log'\n", existing_records_df)
+        # print("\n\nPayload Prepared - 'Welds - Weld Log'\n", payload)
+        # print("\n\nPayload Prepared - 'Welds - Weld Log'\n", existing_records_df)
         #print("--SIMULATED")
 
         #Abort if no rows
@@ -787,11 +1182,22 @@ class MyWindow(QMainWindow):
                 print(f"Row {index}, Invalid Value: {invalid_value}")
         
     def push_to_tpsl(self):
+        if not self.confirm_push_to_quickbase("Spools"):
+            return  # Immediately return if the user decides not to proceed or cancels during countdown 
+        
+        # Post-check rules
+        weld_log_post_checks = {
+            'required_columns': ['Related Record'],
+            'integer_columns': ['Related Record'],
+            'invalid_format_columns': ['Related Record']
+        }
+
+        tpsl_log_post_checks = {
+            'invalid_format_columns': ['TPSL Record']
+        }
+
         #Create a dataframe from tab1
         df = self.create_df_from_table('tpsl')
-        # Reduce the dataframe to the first 5 rows
-        #df = df.head(10)
-        #print("\n\nPUSH DF:", df)
 
         # Load the mapping from the JSON file
         with open('spool_map.json', 'r') as f:
@@ -803,7 +1209,7 @@ class MyWindow(QMainWindow):
         existing_records_df = get_table_data(qb_fields, job_number, TPSL_ID)
 
         payload, row_count, duplicate_map = self.prepare_payload(df, mapping, TPSL_ID, existing_records_df, ['6', '108'])
-        print("\n\nPayload Prepared - 'Spools - TPSL'\n", payload)
+        #print("\n\nPayload Prepared - 'Spools - TPSL'\n", payload)
         
         df['unique_id'] = df['Job'].astype(str) + '-' + df['Spool'].astype(str)
 
@@ -820,7 +1226,12 @@ class MyWindow(QMainWindow):
         if row_count < 1:
             # Update the 'TPSL Record' column using the duplicate_map_dict
             df['TPSL Record'] = df['unique_id'].map(duplicate_map_dict)
-
+            
+            # Applying post-checks to Spool Table
+            print("\nPerforming Post-Checks - Spools...")
+            df = post_check(df, **tpsl_log_post_checks)
+            print("\nPost-Checks Complete - Spools...")
+            
             # Reload the table1 with updated DataFrame
             self.load_data_into_table(self.table1, df)
             print("\n\n'Spools' table reloaded with updated existing records...")
@@ -829,6 +1240,11 @@ class MyWindow(QMainWindow):
             # Update the Welds dataframe with record IDs
             df_welds['unique_id'] = df_welds['Job'].astype(str) + '-' + df_welds['Spool'].astype(str)
             df_welds['Related Record'] = df_welds['unique_id'].map(duplicate_map_dict)
+            
+            # Performing Welds Post-Check...
+            print("\nPerforming Post-Check - Welds...")
+            df_welds = post_check(df_welds, **weld_log_post_checks)
+            print("\nPost-Check Complete - Welds...")
             
             # Reload the table2 (Welds) with updated DataFrame
             self.load_data_into_table(self.table2, df_welds)
@@ -856,7 +1272,7 @@ class MyWindow(QMainWindow):
                 for item in response_data['data']:
                     job = item['6']['value']
                     spool = item['108']['value']
-                    record_id = item['3']
+                    record_id = item['3']['value']
                     unique_id = f"{job}-{spool}"
                     unique_id_to_record_id[unique_id] = record_id
 
@@ -874,6 +1290,11 @@ class MyWindow(QMainWindow):
             
             # Map the record IDs to the DataFrame using the unique identifier
             df['TPSL Record'] = df['unique_id'].map(combined_record_map)
+            
+            # Performing spools Post-Check...
+            print("\nPerforming Post-Check - Spools...")
+            df_welds = post_check(df_welds, **weld_log_post_checks)
+            print("\nPost-Check Complete - Spools...")
 
             self.load_data_into_table(self.table1, df)
             # print("\n\n'Spools' table reloaded with updated records...\nExcluded Mapping: ", duplicate_map)
@@ -881,13 +1302,16 @@ class MyWindow(QMainWindow):
             # Update 'Related Record' in table2 (Welds)
             df_welds['unique_id'] = df_welds['Job'].astype(str) + '-' + df_welds['Spool'].astype(str)
             df_welds['Related Record'] = df_welds['unique_id'].map(combined_record_map)
+            
+            # with pd.ExcelWriter('output.xlsx') as writer:
+            #     df_welds.to_excel(writer, sheet_name='Welds')
+            #     df.to_excel(writer, sheet_name='Spools')
 
-            #df_welds['Related Record'] = df_welds['Spool'].map(combined_record_map)
-
-            with pd.ExcelWriter('output.xlsx') as writer:
-                df_welds.to_excel(writer, sheet_name='Welds')
-                df.to_excel(writer, sheet_name='Spools')
-
+            # Performing Welds Post-Check...
+            print("\nPerforming Post-Check - Welds...")
+            df_welds = post_check(df_welds, **weld_log_post_checks)
+            print("\nPost-Check Complete - Welds...")
+            
             # Reload the table2 (Welds) with updated DataFrame
             self.load_data_into_table(self.table2, df_welds)
             
@@ -928,12 +1352,22 @@ class MyWindow(QMainWindow):
                 # Add the item to the model
                 model.setItem(i, j, item)
                 
-        # Update the icons for each column header
+        # Autosize columns and update icons in one loop
+        icon_width = 20  # Approximate width of the icon
+        padding = 10     # Additional padding
         header_view = standard_table.view.horizontalHeader()
         if isinstance(header_view, CustomHeaderView):
             for col_number in range(df.shape[1]):
+                # Update the icon for the column
                 header_view.setIconForColumn(col_number)
-                
+
+                # Autosize column
+                standard_table.view.resizeColumnToContents(col_number)
+
+                # Adjust column width for icon width
+                current_width = standard_table.view.columnWidth(col_number)
+                standard_table.view.setColumnWidth(col_number, current_width + icon_width + padding)
+                     
         # Redraw the header view
         standard_table.view.horizontalHeader().viewport().update()
 
@@ -988,20 +1422,21 @@ class MyWindow(QMainWindow):
         options = QFileDialog.Option.ReadOnly
         file, _ = QFileDialog.getOpenFileName(self, "Import 'Spools' .dbf File", "", "Database Files (*.dbf);;All Files (*)", options=options)
         if file:
-            print(file)
+            print("\n", file)
             spools_df = self.read_dbf(file)
-            self.export_to_excel(welds_df, spools_df, job_number)
-
+            self.load_dbf_files(welds_df, spools_df, job_number)
+            
     def read_dbf(self, file_path):
         dbf = Dbf5(file_path)
         return dbf.to_dataframe()
-
-    def export_to_excel(self, welds_df, spools_df, job_number):
+    
+    def load_dbf_files(self, welds_df, spools_df, job_number):
         # Sanitize data
         welds_df = sanitize(welds_df)
         spools_df = sanitize(spools_df)
 
         formatted_welds_df = format_welds_df(welds_df, job_number)
+        
         if job_number == "30489-":
             formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #OCI Format
             
@@ -1015,6 +1450,19 @@ class MyWindow(QMainWindow):
             formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
             QMessageBox.information(None, 'Success', f'Not configured for job: {job_number}\nDrawing formats will be assumed as format 1(format_spools_df).')
             #return
+
+        # Define required columns for pre-check
+        welds_required_columns = ['Job', 'Spool', 'Weld ID']
+        spools_required_columns = ['Spool', 'Ref Drawing', 'Series', 'NDE Group', 'Job', 'Sheet']
+
+        # Perform pre-checks
+        print("\nInitiating Pre-Check - Spools...")
+        formatted_spools_df = pre_check(formatted_spools_df, spools_required_columns, integer_columns=['Sheet'])
+        print("\nPre-Check Complete - Spools...")
+        
+        print("\nInitiating Pre-Check - Welds...")
+        formatted_welds_df = pre_check(formatted_welds_df, welds_required_columns, hyphen_columns=['Job'])
+        print("\nPre-Check Complete - Welds...")
         
         print("\n\n>>> Attempting to fill blanks in 'Pipe Spec'....")
         filled_df = fill_blank_pipe_specs(formatted_spools_df)
@@ -1027,7 +1475,41 @@ class MyWindow(QMainWindow):
         #with pd.ExcelWriter('output.xlsx') as writer:
         #    formatted_welds_df.to_excel(writer, sheet_name='Welds')
         #    formatted_spools_df.to_excel(writer, sheet_name='Spools')
- 
+
+    def export_table_to_excel(self, table_name):
+        # Create DataFrame from table
+
+        print("\nTriggered Export:", table_name)
+        df = self.create_df_from_table(table_name)
+
+        # Define initial filename based on table_name
+        if table_name == 'tpsl':
+            base_filename = 'FabManager Spool Data'
+        elif table_name == 'weld log':
+            base_filename = 'FabManager Weld Data'
+        elif table_name == 'nde':
+            base_filename = 'FabManager NDE Data'
+        else:
+            raise ValueError(f"Unknown table name: {table_name}")
+
+        # Check for existing file and handle naming
+        filename = base_filename
+        count = 1
+        while os.path.exists(f'{filename}.xlsx'):
+            filename = f"{base_filename}({count})"
+            count += 1
+        full_filename = f'{filename}.xlsx'
+
+        # Try to save the DataFrame to an Excel file
+        try:
+            # Attempt to open the file to check if it's in use
+            with open(full_filename, 'a') as f:
+                pass
+            with pd.ExcelWriter(full_filename, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Data', index=True)
+            print(f"Data exported successfully to {full_filename}")
+        except IOError as e:
+            print(f"Could not write to {full_filename}. The file may be open or in use. Please close the file and try again.")
 
 if __name__ == "__main__":
     app = QApplication([])
