@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction, QKeySequence, QStandardItemModel, QStandardItem, QIcon, QGuiApplication, QColor, QFont
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QPoint, QTimer
 import pandas as pd
+import numpy as np
 from simpledbf import Dbf5
 from openpyxl import load_workbook
 #from openpyxl.utils.exceptions import FileInUseError
@@ -302,34 +303,37 @@ def map_sch_desc(df, lookup_table_path):
         # Format 'WALL INCH' to have three decimal places
         lookup_df['WALL INCH'] = lookup_df['WALL INCH'].apply(lambda x: "{:.3f}".format(x))
         
+        # Prepare a dictionary for faster lookup with a fallback mechanism
+        lookup_dict = {(row['NPS INCH'], row['WALL INCH']): 
+                       (row['ASME1'], row['ASME3'], row['ASME2']) for index, row in lookup_df.iterrows()}
+        
     except Exception as e:
         print(f"Error loading lookup table: {e}")
-        return df  # Exit the function if the file can't be loaded.
+        return df
     
-    # Prepare a dictionary for faster lookup
-    lookup_dict = {(row['NPS INCH'], row['WALL INCH']): row['ASME1'] for index, row in lookup_df.iterrows()}
-    
+    def get_value_from_asme_columns(asme_values):
+        # This function iterates over the tuple of ASME values and returns the first valid one
+        for value in asme_values:
+            if not pd.isnull(value) and str(value).strip().lower() not in ['nan', '']:
+                return value
+        return np.nan  # Return np.nan if no valid value is found
+
     def get_asme1(size, sch_desc):
-        try:
-            # Convert both size and sch_desc to the correct format for lookup
-            size_float = float(size)  # Convert size to float to match lookup keys
-            sch_desc_float = float(sch_desc)  # Ensure sch_desc is a float
-            sch_desc_str = "{:.3f}".format(sch_desc_float)  # Format sch_desc as string with three decimal places
-            lookup_key = (size_float, sch_desc_str)
-            
-            if lookup_key not in lookup_dict:
-                print(f"Lookup key not found: {lookup_key}")
-                return sch_desc_str  # You might want to return a default value or handle this case differently
-            return lookup_dict[lookup_key]
+        size_float = float(size)
+        sch_desc_str = "{:.3f}".format(float(sch_desc))
+        lookup_key = (size_float, sch_desc_str)
         
-        except ValueError as e:
-            print(f"Error processing size or SCH Desc.: {e}")
-            return sch_desc_str  # Or handle the error as appropriate for your application
+        if lookup_key in lookup_dict:
+            asme_values = lookup_dict[lookup_key]
+            return get_value_from_asme_columns(asme_values)
+        else:
+            print(f"Lookup key not found: {lookup_key}")
+            return np.nan
 
     # Apply the lookup function to the DataFrame
     df['sch_value'] = df.apply(lambda row: get_asme1(row['Size'], row['SCH Desc.']), axis=1)
+    
     return df
-
 def format_welds_df(df, job_number):
     df = df.copy()
 
@@ -380,8 +384,8 @@ def format_welds_df(df, job_number):
     print(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
 
     # Select only the desired columns and rename them
-    df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'CONTROLNO', 'WELDLABEL']]
-    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'WDESCRIPT': 'Joint Detail' ,'SPEC': 'Pipe Spec', 'WALL_I':'SCH Desc.','CONTROLNO': 'Spool'}, inplace=True)
+    df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'MATGROUP','CONTROLNO', 'WELDLABEL']]
+    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'WDESCRIPT': 'Joint Detail' ,'SPEC': 'Pipe Spec', 'WALL_I':'SCH Desc.', 'MATGROUP': 'Mtrl Group','CONTROLNO': 'Spool'}, inplace=True)
 
     # Ensure 'SCH Desc.' column is a string before applying the function
     df['SCH Desc.'] = df['SCH Desc.'].astype(str).apply(extract_float_from_parentheses)
