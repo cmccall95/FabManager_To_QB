@@ -11,7 +11,7 @@
     <OutputPath>.</OutputPath>
     <Name>FabManager_To_QB</Name>
     <RootNamespace>FabManager_To_QB</RootNamespace>
-    <InterpreterId>MSBuild|venv|$(MSBuildProjectFullPath)</InterpreterId>
+    <InterpreterId>MSBuild|vir_env|$(MSBuildProjectFullPath)</InterpreterId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -24,12 +24,22 @@
   <ItemGroup>
     <Compile Include="FabManager_To_QB.py" />
     <Compile Include="qb_mod.py" />
+    <Compile Include="tableExtract.py" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="venv\">
       <Id>venv</Id>
       <Version>3.9</Version>
       <Description>venv (Python 3.9 (64-bit))</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
+    <Interpreter Include="vir_env\">
+      <Id>vir_env</Id>
+      <Version>3.9</Version>
+      <Description>vir_env (Python 3.9 (64-bit))</Description>
       <InterpreterPath>Scripts\python.exe</InterpreterPath>
       <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
       <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>

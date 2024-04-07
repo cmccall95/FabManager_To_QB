@@ -285,6 +285,51 @@ def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
 
 #     return df
 
+def extract_float_from_parentheses(s):
+    # Ensure s is a string and find the start and end of the value inside the parentheses
+    s = str(s)
+    start = s.find('(')
+    end = s.find(')')
+    if start != -1 and end != -1 and start < end:
+        return float(s[start+1:end])
+    return "0.0"  # Returning a string formatted number.
+
+def map_sch_desc(df, lookup_table_path):
+    try:
+        # Load the lookup table
+        lookup_df = pd.read_excel(lookup_table_path)
+        
+        # Format 'WALL INCH' to have three decimal places
+        lookup_df['WALL INCH'] = lookup_df['WALL INCH'].apply(lambda x: "{:.3f}".format(x))
+        
+    except Exception as e:
+        print(f"Error loading lookup table: {e}")
+        return df  # Exit the function if the file can't be loaded.
+    
+    # Prepare a dictionary for faster lookup
+    lookup_dict = {(row['NPS INCH'], row['WALL INCH']): row['ASME1'] for index, row in lookup_df.iterrows()}
+    
+    def get_asme1(size, sch_desc):
+        try:
+            # Convert both size and sch_desc to the correct format for lookup
+            size_float = float(size)  # Convert size to float to match lookup keys
+            sch_desc_float = float(sch_desc)  # Ensure sch_desc is a float
+            sch_desc_str = "{:.3f}".format(sch_desc_float)  # Format sch_desc as string with three decimal places
+            lookup_key = (size_float, sch_desc_str)
+            
+            if lookup_key not in lookup_dict:
+                print(f"Lookup key not found: {lookup_key}")
+                return sch_desc_str  # You might want to return a default value or handle this case differently
+            return lookup_dict[lookup_key]
+        
+        except ValueError as e:
+            print(f"Error processing size or SCH Desc.: {e}")
+            return sch_desc_str  # Or handle the error as appropriate for your application
+
+    # Apply the lookup function to the DataFrame
+    df['sch_value'] = df.apply(lambda row: get_asme1(row['Size'], row['SCH Desc.']), axis=1)
+    return df
+
 def format_welds_df(df, job_number):
     df = df.copy()
 
@@ -335,8 +380,20 @@ def format_welds_df(df, job_number):
     print(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
 
     # Select only the desired columns and rename them
-    df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'CONTROLNO', 'WELDLABEL']]
-    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'SPEC': 'Pipe Spec', 'CONTROLNO': 'Spool'}, inplace=True)
+    df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'CONTROLNO', 'WELDLABEL']]
+    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'WDESCRIPT': 'Joint Detail' ,'SPEC': 'Pipe Spec', 'WALL_I':'SCH Desc.','CONTROLNO': 'Spool'}, inplace=True)
+
+    # Ensure 'SCH Desc.' column is a string before applying the function
+    df['SCH Desc.'] = df['SCH Desc.'].astype(str).apply(extract_float_from_parentheses)
+    
+    # Then convert to float for lookup
+    df['SCH Desc.'] = df['SCH Desc.'].astype(float)
+    
+    # Format 'SCH Desc.' column as a string with the format "0.000"
+    df['SCH Desc.'] = df['SCH Desc.'].map("{:0.3f}".format)
+    
+    # Call map_sch_desc after you have the 'SCH Desc.' as floats
+    map_sch_desc(df, 'Pipe Dimensions and Weights.xlsx')
 
     return df
 
@@ -864,7 +921,10 @@ class MyWindow(QMainWindow):
         self.export_button1 = QPushButton("Export", self.tab1)
         self.push_to_qb_button2 = QPushButton("Push Welds to QuickBase", self.tab2)
         self.export_button2 = QPushButton("Export", self.tab1)
+        
         self.push_to_qb_button3 = QPushButton("Push NDE Specs to QuickBase", self.tab3)
+        
+        self.export_button3 = QPushButton("Export", self.tab1)
 
         #Connect Buttons
         self.push_to_qb_button1.clicked.connect(self.push_to_tpsl)
@@ -874,6 +934,7 @@ class MyWindow(QMainWindow):
         self.export_button2.clicked.connect(lambda: self.export_table_to_excel('weld log'))
         
         self.push_to_qb_button3.clicked.connect(self.push_to_nde)
+        self.export_button3.clicked.connect(lambda: self.export_table_to_excel('nde'))
 
         # Add QTableWidget and button to the layout for each tab
         self.layout1.addWidget(self.push_to_qb_button1, stretch=0)  # No extra space to button
@@ -885,6 +946,7 @@ class MyWindow(QMainWindow):
         self.layout2.addWidget(self.table2, stretch=1)
         
         self.layout3.addWidget(self.push_to_qb_button3, stretch=0)
+        self.layout3.addWidget(self.export_button3, stretch=0)
         self.layout3.addWidget(self.table3, stretch=1)
 
         # Set the layout for each tab
@@ -1385,7 +1447,7 @@ class MyWindow(QMainWindow):
 
         job_number = self.get_job_number()
 
-        workbook_path = 'Linde NDE.xlsx'
+        workbook_path = 'LL Template Rev4.xlsx'
 
         # Load data from the 'Original Format' sheet
         original_df = pd.read_excel(workbook_path, sheet_name='Original Format')
