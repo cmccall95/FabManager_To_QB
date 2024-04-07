@@ -367,3 +367,11 @@ vir_env/
 
 # .env file
 .env
+/FabManager NDE Data(1).xlsx
+/FabManager NDE Data.xlsx
+/FabManager Spool Data(3).xlsx
+/FabManager Spool Data(4).xlsx
+/FabManager Weld Data(3).xlsx
+/FabManager Weld Data(4).xlsx
+/FabManager Weld Data(5).xlsx
+/output_data.csv
