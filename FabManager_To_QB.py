@@ -287,53 +287,57 @@ def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
 #     return df
 
 def extract_float_from_parentheses(s):
-    # Ensure s is a string and find the start and end of the value inside the parentheses
     s = str(s)
     start = s.find('(')
     end = s.find(')')
     if start != -1 and end != -1 and start < end:
         return float(s[start+1:end])
-    return "0.0"  # Returning a string formatted number.
+    return "0.0"
 
 def map_sch_desc(df, lookup_table_path):
     try:
-        # Load the lookup table
         lookup_df = pd.read_excel(lookup_table_path)
-        
-        # Format 'WALL INCH' to have three decimal places
         lookup_df['WALL INCH'] = lookup_df['WALL INCH'].apply(lambda x: "{:.3f}".format(x))
-        
-        # Prepare a dictionary for faster lookup with a fallback mechanism
+        # Preparing the dictionary without 'MTRL Group' as it's not in the lookup table
         lookup_dict = {(row['NPS INCH'], row['WALL INCH']): 
-                       (row['ASME1'], row['ASME3'], row['ASME2']) for index, row in lookup_df.iterrows()}
-        
+                       {'ASME1': row['ASME1'], 'ASME3': row['ASME3'], 'ASME2': row['ASME2']}
+                       for index, row in lookup_df.iterrows()}
     except Exception as e:
         print(f"Error loading lookup table: {e}")
         return df
-    
-    def get_value_from_asme_columns(asme_values):
-        # This function iterates over the tuple of ASME values and returns the first valid one
-        for value in asme_values:
+
+    def get_asme_value_based_on_matgroup(matgroup, asme_values):
+        if "Grp 0" in matgroup or "Grp 1" in matgroup:
+            preferred_order = ['ASME1', 'ASME3', 'ASME2']
+        else:
+            # If not "Grp 0" or "Grp 1", start with ASME3, then check ASME1, then fallback to ASME2
+            preferred_order = ['ASME3', 'ASME1', 'ASME2']
+
+        for key in preferred_order:
+            value = asme_values[key]
+            # Check if the value is valid (not NaN or a blank string)
             if not pd.isnull(value) and str(value).strip().lower() not in ['nan', '']:
                 return value
-        return np.nan  # Return np.nan if no valid value is found
 
-    def get_asme1(size, sch_desc):
-        size_float = float(size)
-        sch_desc_str = "{:.3f}".format(float(sch_desc))
+        # If none of the values are valid, return np.nan as a last resort
+        return np.nan
+
+    def get_asme1(row):
+        size_float = float(row['Size'])
+        sch_desc_str = "{:.3f}".format(float(row['SCH Desc.']))
         lookup_key = (size_float, sch_desc_str)
-        
+
         if lookup_key in lookup_dict:
             asme_values = lookup_dict[lookup_key]
-            return get_value_from_asme_columns(asme_values)
+            return get_asme_value_based_on_matgroup(row['MTRL Group'], asme_values)
         else:
             print(f"Lookup key not found: {lookup_key}")
-            return np.nan
+            return sch_desc_str
 
-    # Apply the lookup function to the DataFrame
-    df['sch_value'] = df.apply(lambda row: get_asme1(row['Size'], row['SCH Desc.']), axis=1)
-    
+    df['sch_value'] = df.apply(get_asme1, axis=1)
     return df
+
+
 def format_welds_df(df, job_number):
     df = df.copy()
 
@@ -385,7 +389,7 @@ def format_welds_df(df, job_number):
 
     # Select only the desired columns and rename them
     df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'MATGROUP','CONTROLNO', 'WELDLABEL']]
-    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'WDESCRIPT': 'Joint Detail' ,'SPEC': 'Pipe Spec', 'WALL_I':'SCH Desc.', 'MATGROUP': 'Mtrl Group','CONTROLNO': 'Spool'}, inplace=True)
+    df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'WDESCRIPT': 'Joint Detail' ,'SPEC': 'Pipe Spec', 'WALL_I':'SCH Desc.', 'MATGROUP':'MTRL Group','CONTROLNO': 'Spool'}, inplace=True)
 
     # Ensure 'SCH Desc.' column is a string before applying the function
     df['SCH Desc.'] = df['SCH Desc.'].astype(str).apply(extract_float_from_parentheses)
