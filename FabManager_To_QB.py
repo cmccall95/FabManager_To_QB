@@ -14,9 +14,12 @@ from simpledbf import Dbf5
 from openpyxl import load_workbook
 #from openpyxl.utils.exceptions import FileInUseError
 from dotenv import load_dotenv
+import logging
+from logging.handlers import RotatingFileHandler
 
 load_dotenv()  # take environment variables from .env.
 from qb_mod import get_table_data, export_weld_log_to_excel
+from app_paths import get_base_path
 
 HOSTNAME = os.getenv('HOSTNAME')
 TOKEN = os.getenv('TOKEN')
@@ -35,11 +38,93 @@ pd.set_option('display.max_rows', 500)
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
-# print("Temporary Export - (Check Function). Ensure to disable when done")
-# export_weld_log_to_excel(WELD_LOG_ID)
+spool_detail_path = "app_files/30489 Spool Detail.xlsx"
+
+# Define the list of statuses to skip
+skip_statuses = ['Void', 'Eng Rel', 'On Hold', 'DR', 'Drawn', 'DNF']
+
+def setup_logging():
+    # Create a custom logger
+    global logger
+    logger = logging.getLogger('excel_app') # Use a custom logger name for your application
+    logger.setLevel(logging.DEBUG)  # Logger is set to capture all messages from DEBUG and above.
+    #logger.setLevel(logging.INFO)  # Logger is set to capture all messages from info and above.
+
+    # Prevent adding multiple handlers to the logger
+    if not logger.handlers:
+        # Create console handler and set level to debug
+        console_handler = logging.StreamHandler()
+        #console_handler.setLevel(logging.WARNING)  # Console handler will only emit ERROR and CRITICAL messages.
+        console_handler.setLevel(logging.DEBUG)  # Console handler will only emit ERROR and CRITICAL messages.
+        formatter = logging.Formatter('%(asctime)s | %(name)s | %(levelname)s | %(message)s | line: %(lineno)d') # Create formatter and add it to the handlers
+        console_handler.setFormatter(formatter)
+
+        # Build file save path
+        base_path = get_base_path()
+        log_directory = os.path.join(base_path, 'log')
+        if not os.path.exists(log_directory):
+            os.makedirs(log_directory)  # Create the directory if it does not exist
+
+        log_path = os.path.join(log_directory, 'app_log.log')
+
+    
+        # Optionally, add a file handler for persistent logging
+        file_handler = RotatingFileHandler(log_path, maxBytes=1024*1024*5, backupCount=5)
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        
+        # Add the handlers to the logger
+        logger.addHandler(console_handler)
+        logger.addHandler(file_handler)
+        print("<----------RotatingFileHandler enabled for logging------------->")
+    else: 
+        print("\n\n-----------------------------")
+        print("\n-----------------------------")
+        print("LOGGER IS ALREADY ACTIVE - COULD NOT CONFIGURE")
+        print("\n-----------------------------")
+        print("\n-----------------------------\n\n")
+        
+    # Set higher logging levels for other packages (Avoids getting debug statements from unnecessary packages)
+    logging.getLogger('matplotlib').setLevel(logging.WARNING)
 
 def sanitize(df):
     return df.map(lambda x: ''.join(filter(lambda c: c.isprintable(), str(x))) if isinstance(x, str) else x)
+
+def add_status_column(df, file_path):
+    # Function to try conversion and catch errors
+    def try_convert_to_int(value):
+        try:
+            return int(float(value.lstrip('0')))
+        except ValueError:
+            logger.error(f"Could not convert value: {value}")
+            return None  # Or a placeholder value indicating conversion failure
+
+    # Load the Excel file
+    status_df = pd.read_excel(file_path)
+
+    # Strip spaces from column names
+    status_df.columns = status_df.columns.str.strip()
+
+    # Adjust columns if necessary, e.g., if the names are known to have extra spaces or similar issues
+    # Ensure columns you will use are properly named here after stripping
+    use_columns = ['Spool_ID', 'Current_Status']  # Example, adjust as needed
+
+    # Keep only necessary columns to avoid potential errors
+    status_df = status_df[use_columns]
+
+    # Convert the 'Spool_ID' column in the Excel DataFrame
+    status_df['Spool_ID'] = status_df['Spool_ID'].astype(str).apply(try_convert_to_int)
+
+    # Drop rows where conversion failed
+    status_df = status_df.dropna(subset=['Spool_ID'])
+
+    # Create a dictionary for mapping 'Spool' to 'Status'
+    status_map = status_df.set_index('Spool_ID')['Current_Status'].to_dict()
+
+    # Map the 'Status' to the existing DataFrame
+    df['Status'] = df['Spool'].map(status_map).fillna('DNF')
+
+    return df
 
 def transform_linde_specs(original_df, needed_df, job_number):
     # Create a copy of the needed_df to avoid modifying the original DataFrame
@@ -114,9 +199,9 @@ def fill_blank_pipe_specs(df):
 
 def format_spools_df(df, weld_df, job_number): #Linde Setup: 30497
     
-    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38' ]].copy()
+    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38','SP37']].copy()
     df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
-                       'AREA', 'SP36': 'Ref Drawing', 'SP38': 'Spool/Piece Mark' }, inplace=True)
+                       'AREA', 'SP36': 'Ref Drawing', 'SP37': 'Drawing Rev.' ,'SP38': 'Spool/Piece Mark' }, inplace=True)
 
     # Remove the first row
     df = df.iloc[1:]
@@ -140,10 +225,6 @@ def format_spools_df(df, weld_df, job_number): #Linde Setup: 30497
 
     df['Sheet'] = df['Ref Drawing'].apply(extract_sheet)
     
-    #df['Sheet'] = df['Ref Drawing'].apply(lambda x: int(re.search(r'\.(\d{3})\b', x).group(1)) if re.search(r'\.(\d{3})\b', x) else None)
-
-    #df['Sheet'] = df['Ref Drawing'].apply(lambda x: int(re.search(r'\.(\d+)$', x).group(1)) if re.search(r'\.(\d+)$', x) else '')
-
     # Drop duplicates in weld_df, keeping the row with non-blank 'Pipe Spec' if present
     weld_df = weld_df.sort_values('Pipe Spec', na_position='last').drop_duplicates(subset='Spool', keep='first')
 
@@ -158,9 +239,9 @@ def format_spools_df(df, weld_df, job_number): #Linde Setup: 30497
 
 def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
     
-    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38' ]].copy()
+    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38', 'SP37']].copy()
     df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
-                       'AREA', 'SP36': 'Ref Drawing', 'SP38': 'Spool/Piece Mark' }, inplace=True)
+                       'AREA', 'SP36': 'Ref Drawing', 'SP37': 'Drawing Rev.', 'SP38': 'Spool/Piece Mark' }, inplace=True)
 
     # Initialize a list to store non-convertible values
     non_convertible_values = []
@@ -170,6 +251,7 @@ def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
         try:
             return int(float(value.lstrip('0')))
         except ValueError:
+            logger.warning(f"Could not convert value: {value}")
             non_convertible_values.append(value)
             return None  # Or a placeholder value indicating conversion failure
 
@@ -207,15 +289,15 @@ def format_spools_df2(df, weld_df, job_number): #OCI Setup JOBS: 30489
     #df['NDE Group'] = '' #df['Series']
 
     df['Job'] = job_number
+    
+    updated_df = add_status_column(df, spool_detail_path)
 
-    #print("\n1. ", df)
-
-    return df
+    return updated_df
 
 def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
-    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38']].copy()
+    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38', 'SP37']].copy()
     df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
-                       'AREA', 'SP36': 'Ref Drawing', 'SP38': 'Spool/Piece Mark'}, inplace=True)
+                       'AREA', 'SP36': 'Ref Drawing', 'SP37': 'Drawing Rev.', 'SP38': 'Spool/Piece Mark'}, inplace=True)
 
     # Remove the first row
     df = df.iloc[1:]
@@ -242,6 +324,45 @@ def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
 
     df['Job'] = job_number
 
+    return df
+
+def extract_series_and_sheet4(ref_drawing, PATTERN_REGISTRY):
+    
+    for pattern, series_group, sheet_group in PATTERN_REGISTRY:
+        match = re.match(pattern, ref_drawing)
+        if match:
+            return match.group(series_group), int(match.group(sheet_group))
+    return None, None
+
+def format_spools_df4(df, weld_df, job_number): # --> Format for 30500
+    df = df[['CONTROLNO', 'SP4', 'SP5', 'SP7', 'SP36', 'SP38', 'SP37']].copy()
+    df.rename(columns={'CONTROLNO': 'Spool', 'SP4': 'MAT. Group', 'SP5': 'VT', 'SP7': 
+                       'AREA', 'SP36': 'Ref Drawing', 'SP37': 'Drawing Rev.', 'SP38': 'Spool/Piece Mark'}, inplace=True)
+    
+    PATTERN_REGISTRY = [
+    (r'^(.*?)-(\d+)$', 1, 2),  # Matches format like "B-14346-1"
+    # Add more patterns here as needed
+]
+
+    df = df.iloc[1:]  # Remove the first row
+
+    # Remove non-digit characters from 'CONTROLNO'
+    df['Spool'] = df['Spool'].astype(str).apply(lambda x: re.sub('[^\d]', '', x)).astype(int)
+
+    # Extract 'Series' and 'Sheet' from 'Ref Drawing'
+    df['Series'], df['Sheet'] = zip(*df['Ref Drawing'].apply(lambda x: extract_series_and_sheet4(x, PATTERN_REGISTRY)))
+
+    # Drop duplicates in weld_df, keeping the row with non-blank 'Pipe Spec' if present
+    weld_df = weld_df.sort_values('Pipe Spec', na_position='last').drop_duplicates(subset='Spool', keep='first')
+
+    # Vlookup 'Pipe Spec' from weld_df
+    df['Pipe Spec'] = df['Spool'].map(weld_df.set_index('Spool')['Pipe Spec'])
+
+    # Set 'NDE Group' column equal to 'Series' Removed for temporary update
+    df['NDE Group'] = df['Series']
+    df['Job'] = job_number
+
+    df['Job'] = job_number
     return df
 
 # def format_welds_df(df, job_number): #Linde Setup: Jobs: 30497, 81213
@@ -285,6 +406,21 @@ def format_spools_df3(df, weld_df, job_number): #Blue Tide Jobs: 30496
 #     df.rename(columns={'SIZE_I': 'Size', 'GENRE': 'Joint', 'SPEC': 'Pipe Spec', 'CONTROLNO': 'Spool'}, inplace=True)
 
 #     return df
+def find_closest_match(lookup_dict, size, wall_inch, tolerance=0.002):
+    """
+    Finds the closest match within the specified tolerance.
+    """
+    closest_key = None
+    min_diff = float('inf')  # Initialize with infinity
+    
+    for (key_size, key_wall_inch), _ in lookup_dict.items():
+        if key_size == size:  # Ensure we're comparing the same size
+            diff = abs(key_wall_inch - wall_inch)  # Calculate absolute difference
+            if diff <= tolerance and diff < min_diff:  # Check within tolerance and closer than previous
+                closest_key = (key_size, key_wall_inch)
+                min_diff = diff
+                
+    return closest_key
 
 def extract_float_from_parentheses(s):
     s = str(s)
@@ -298,10 +434,11 @@ def map_sch_desc(df, lookup_table_path):
     try:
         lookup_df = pd.read_excel(lookup_table_path)
         lookup_df['WALL INCH'] = lookup_df['WALL INCH'].apply(lambda x: "{:.3f}".format(x))
-        # Preparing the dictionary without 'MTRL Group' as it's not in the lookup table
-        lookup_dict = {(row['NPS INCH'], row['WALL INCH']): 
-                       {'ASME1': row['ASME1'], 'ASME3': row['ASME3'], 'ASME2': row['ASME2']}
-                       for index, row in lookup_df.iterrows()}
+        
+        # Preparing the dictionary without 'MTRL Group' as it's not in the lookup table        
+        lookup_dict = {(row['NPS INCH'], float(row['WALL INCH'])):  # Ensuring 'WALL INCH' is a float
+               {'ASME1': row['ASME1'], 'ASME3': row['ASME3'], 'ASME2': row['ASME2']}
+               for index, row in lookup_df.iterrows()}
     except Exception as e:
         print(f"Error loading lookup table: {e}")
         return df
@@ -321,25 +458,64 @@ def map_sch_desc(df, lookup_table_path):
 
         # If none of the values are valid, return np.nan as a last resort
         return np.nan
-
+    
     def get_asme1(row):
         size_float = float(row['Size'])
-        sch_desc_str = "{:.3f}".format(float(row['SCH Desc.']))
-        lookup_key = (size_float, sch_desc_str)
-
-        if lookup_key in lookup_dict:
-            asme_values = lookup_dict[lookup_key]
-            return get_asme_value_based_on_matgroup(row['MTRL Group'], asme_values)
+        sch_desc_float = float(row['SCH Desc.'])  # Ensure this is a float for comparison
+        closest_key = find_closest_match(lookup_dict, size_float, sch_desc_float)
+    
+        if closest_key:
+            asme_values = lookup_dict[closest_key]
+            value = get_asme_value_based_on_matgroup(row['MTRL Group'], asme_values)
+            # If the value is explicitly 0, return a blank string
+            if value == 0:
+                return ""
+            else:
+                return value
         else:
-            print(f"Lookup key not found: {lookup_key}")
-            return sch_desc_str
+            #logger.info(f"Closest match not found for Size: {size_float}, Wall Inch: {sch_desc_float}")
+            # Check if sch_desc_float is 0 and return blank if true, else format sch_desc_float
+            return "" if sch_desc_float == 0 else "{:.3f}".format(sch_desc_float)
 
-    df['sch_value'] = df.apply(get_asme1, axis=1)
+    df['SCH'] = df.apply(get_asme1, axis=1)
     return df
 
+def map_joint_details(df, lookup_table_path):
+    # Load the joint lookup table
+    joint_lookup_df = pd.read_excel(lookup_table_path)
+
+    # Function to find the joint based on joint detail description
+    def find_joint(detail):
+        for _, row in joint_lookup_df.iterrows():
+            if row['Lookup Key'] in detail:
+                return row['Joint']
+        return ""  # Return an empty string if no match is found
+
+    # Apply the function to create the 'Joint 2' column
+    df['Joint 2'] = df['Joint Detail'].apply(find_joint)
+    
+    return df
+
+def map_base_material(df, lookup_table_path):
+    # Load the joint lookup table
+    mtrl_lookup_df = pd.read_excel(lookup_table_path)
+
+    # Function to find the joint based on joint detail description
+    def find_spec(detail):
+        for _, row in mtrl_lookup_df.iterrows():
+            if row['PIPE CLASS'] in detail:
+                return row['BASE MATERIAL']
+        return ""  # Return an empty string if no match is found
+
+    # Apply the function to create the 'Joint 2' column
+    df['Material'] = df['Pipe Spec'].apply(find_spec)
+    
+    return df
 
 def format_welds_df(df, job_number):
     df = df.copy()
+
+    non_convertible_values = []
 
     # Function to check if CONTROLNO can be converted to an integer
     def is_convertible_to_int(value):
@@ -348,6 +524,15 @@ def format_welds_df(df, job_number):
             return True
         except ValueError:
             return False
+
+    # Function to try conversion and catch errors
+    def try_convert_to_int(value):
+        try:
+            return int(float(value.lstrip('0')))
+        except ValueError:
+            logger.warning(f"Could not convert value: {value}")
+            non_convertible_values.append(value)
+            return None  # Or a placeholder value indicating conversion failure
 
     # Apply the function to create a mask for rows with valid CONTROLNO
     valid_controlno_mask = df['CONTROLNO'].astype(str).str.lstrip('0').apply(is_convertible_to_int)
@@ -385,7 +570,7 @@ def format_welds_df(df, job_number):
     # Calculate the number of rows dropped
     final_row_count = df.shape[0]
     rows_dropped = initial_row_count - final_row_count
-    print(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
+    logger.info(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
 
     # Select only the desired columns and rename them
     df = df[['Related Record', 'Job', 'Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'MATGROUP','CONTROLNO', 'WELDLABEL']]
@@ -402,8 +587,27 @@ def format_welds_df(df, job_number):
     
     # Call map_sch_desc after you have the 'SCH Desc.' as floats
     map_sch_desc(df, 'Pipe Dimensions and Weights.xlsx')
+    
+    # Call map_joint_details to add the 'Joint 2' column based on 'Joint Detail'
+    df = map_joint_details(df, 'Joint Lookup.xlsx')
+    
+    
+    # # Check if 'BASE MATERIAL' column exists, if not, create it
+    # if 'Material' not in df.columns:
+    #         df['Material'] = ''
+    
+    # Call map_base_material to add the 'BASE MATERIAL' column based on 'PIPE CLASS'
+    if job_number == "30489-":
+        df = map_base_material(df, 'assets/30489 Material.xlsx')
+        
+    # Map statuses
+    # Apply conversion with error handling
+    df['Spool'] = df['Spool'].astype(str).apply(try_convert_to_int)
 
-    return df
+    updated_df = add_status_column(df, spool_detail_path)
+    
+
+    return updated_df
 
 def pre_check(df, required_columns, integer_columns=[], hyphen_columns=[]):
     df['Error'] = ''
@@ -452,8 +656,8 @@ def pre_check(df, required_columns, integer_columns=[], hyphen_columns=[]):
 def post_check(df, required_columns=[], integer_columns=[], invalid_format_columns=[]):
     # Assuming 'Error' and 'Error Description' columns already exist
     # If not, uncomment the following lines
-    # df['Error'] = ''
-    # df['Error Description'] = ''
+    df['Error'] = ''
+    df['Error Description'] = ''
 
     # Check for required columns being blank
     for column in required_columns:
@@ -707,8 +911,7 @@ class StandardTable(QWidget):
             selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
         else:
             selectAllCheckbox.setCheckState(Qt.CheckState.PartiallyChecked)
-
-
+            
     def onSelectAllStateChanged(self, listWidget, state):
         print(f"\nonSelectAllStateChanged Triggered. State: {state}")
         
@@ -1051,9 +1254,18 @@ class MyWindow(QMainWindow):
         if status_code == 200:
             print("Status 200: Records Pushed Successfully")
         else:
-            print("Error: Failed to push records")
-
-        #print("\n\nRESPONSE:", response.json())
+            try:
+                error_details = response.json()  # Assuming the API returns errors in JSON format
+                error_message = error_details.get('message', 'No error message provided')
+                # You can also access other keys depending on the structure of the response
+                # For instance, if there's a 'details' key with more info, you might do:
+                # error_details_str = str(error_details.get('details', ''))
+                print(f"Error: Failed to push records - {error_message}")
+                print("\n\nRESPONSE:", response.json())
+            except ValueError:
+                # If response is not in JSON format or can't be parsed
+                print(f"Error: Failed to push records - {response.text}")
+                print("\n\nRESPONSE:", response.json())
 
         return response
 
@@ -1102,13 +1314,6 @@ class MyWindow(QMainWindow):
         df_mapped = df.rename(columns=mapping)
 
         payload_data = []
-
-        # Check if existing_df is None or empty
-        #print("\n\nEXISTING DF: \n", existing_df)
-        # Verify that compare_columns are in df_mapped
-        # for col in compare_columns:
-        #     if col not in df_mapped.columns:
-        #         raise ValueError(f"Column '{col}' not found in DataFrame")
 
         if existing_df is not None and not existing_df.empty:
             # Create a unique identifier for each row in df_mapped and existing_df based on the compare_columns
@@ -1191,7 +1396,19 @@ class MyWindow(QMainWindow):
         
         # Iterate over the DataFrame to validate 'Related Record' column
         for index, row in df.iterrows():
-            related_record = row.get('Related Record')
+            try:
+                related_record = row.get('Related Record')
+                # Ensure the 'Status' column values are stripped of leading/trailing spaces
+                current_status = row.get('Status').strip() if row.get('Status') else ''
+                
+                # Skip rows where 'Status' matches any in the skip list
+                if current_status in skip_statuses:
+                    skipped_records.append((index, 'Status: ' + current_status))
+                    df.drop(index, inplace=True)  # Remove invalid row from DataFrame
+                    continue  # Skip further checks and move to the next row
+
+            except Exception as e:
+                logger.error(f"{e}", exc_info=True)
             try:
                 # Attempt to convert 'Related Record' to an integer
                 int_related_record = int(related_record) if related_record is not None else None
@@ -1268,10 +1485,25 @@ class MyWindow(QMainWindow):
 
         #Create a dataframe from tab1
         df = self.create_df_from_table('tpsl')
+        
+        # Initialize a list to hold skipped records
+        skipped_records = []
 
         # Load the mapping from the JSON file
         with open('spool_map.json', 'r') as f:
             mapping = json.load(f)
+            
+        # Prepare dataframe before mapping check
+        for index, row in df.iterrows():
+            # Ensure the 'Status' column values are stripped of leading/trailing spaces
+            current_status = row.get('Status').strip() if row.get('Status') else ''
+        
+            # Skip rows where 'Status' matches any in the skip list
+            if current_status in skip_statuses:
+                skipped_records.append((index, 'Status: ' + current_status))
+                df.drop(index, inplace=True)  # Remove invalid row from DataFrame
+                continue  # Skip further processing and move to the next row
+
 
          #Check if duplicate records exists
         job_number = self.get_job_number()
@@ -1362,9 +1594,9 @@ class MyWindow(QMainWindow):
             df['TPSL Record'] = df['unique_id'].map(combined_record_map)
             
             # Performing spools Post-Check...
-            print("\nPerforming Post-Check - Spools...")
+            print("\nPerforming Post-Check - Welds...")
             df_welds = post_check(df_welds, **weld_log_post_checks)
-            print("\nPost-Check Complete - Spools...")
+            print("\nPost-Check Complete - Welds...")
 
             self.load_data_into_table(self.table1, df)
             # print("\n\n'Spools' table reloaded with updated records...\nExcluded Mapping: ", duplicate_map)
@@ -1378,14 +1610,20 @@ class MyWindow(QMainWindow):
             #     df.to_excel(writer, sheet_name='Spools')
 
             # Performing Welds Post-Check...
-            print("\nPerforming Post-Check - Welds...")
+            logger.info("\nPerforming Post-Check - Welds...")
             df_welds = post_check(df_welds, **weld_log_post_checks)
-            print("\nPost-Check Complete - Welds...")
+            logger.info("\nPost-Check Complete - Welds...")
             
             # Reload the table2 (Welds) with updated DataFrame
             self.load_data_into_table(self.table2, df_welds)
             
-            print("\n\n'Welds' table reloaded with updated records...")
+            # Before returning or before final processing:
+            if skipped_records:
+                print("\nSkipped Records (Invalid Statuses):")
+                for index, skipped_info in skipped_records:
+                    print(f"Row {index}, Skipped Info: {skipped_info}")
+            
+                    logger.info("\n\n'Welds' table reloaded with updated records...")
 
     def load_data_into_table(self, standard_table, df):
         print("\n\nLoading Data into Tables")
@@ -1516,6 +1754,9 @@ class MyWindow(QMainWindow):
         elif job_number == "30496-":
             formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #Blue Tide Format
             
+        elif job_number == "30500-":
+            formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #CF Format
+            
         else:
             formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
             QMessageBox.information(None, 'Success', f'Not configured for job: {job_number}\nDrawing formats will be assumed as format 1(format_spools_df).')
@@ -1582,6 +1823,7 @@ class MyWindow(QMainWindow):
             print(f"Could not write to {full_filename}. The file may be open or in use. Please close the file and try again.")
 
 if __name__ == "__main__":
+    setup_logging()
     app = QApplication([])
     window = MyWindow()
     window.showMaximized()
