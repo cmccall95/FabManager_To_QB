@@ -1,3 +1,4 @@
+from tarfile import RECORDSIZE
 import pandas as pd
 import os, sys, requests, json
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ pd.set_option('display.width', 1000)
 
 
 #Main QB call for app
-def get_table_data(qb_fields, job_number, table_id):
+def get_table_data(qb_fields, job_numbers, table_id):
     print("\nFetching data...")
     # Get table info and update field mapping
     headers = {
@@ -34,8 +35,20 @@ def get_table_data(qb_fields, job_number, table_id):
         'Content-Type': 'application/json'
         }
 
-        # Construct where clause using tpsl_data
-    where_clause = f"{{6.EX.{job_number}}}"
+    # Debug print job numbers
+    print(f"Job numbers to query: {job_numbers}")
+
+    # For a single job
+    if len(job_numbers) == 1:
+        where_clause = f"{{6.EX.'{job_numbers[0]}'}}"
+    # For multiple jobs, put OR between conditions
+    else:
+        conditions = [f"{{6.EX.'{job}'}}" for job in job_numbers]
+        where_clause = "OR".join(conditions)
+        # Add outer parentheses for clarity
+        where_clause = f"({where_clause})"
+
+    print(f"WHERE clause: {where_clause}")
 
     query_body = {
         "from": table_id, 
@@ -51,10 +64,19 @@ def get_table_data(qb_fields, job_number, table_id):
         json=query_body
     )
     
+    # Print response content for error cases
+    if response.status_code != 200:
+        print(f"\n\nError response content: \n{response.text}")
+        # Debug print full query
+        print(f"\n\nQuery body: \n{json.dumps(query_body, indent=2)}")
+    
     if response.status_code == 200:
         print("Request Successful... " + str(response.status_code))
         data = response.json()
         records = data.get('data', [])
+
+        # print(f"\n\nRECORDS:\n {records}")
+        print(f"\n\nQuery: \n{query_body}")
 
         #Extract values from dictionaries
         for record in records:
@@ -64,6 +86,7 @@ def get_table_data(qb_fields, job_number, table_id):
 
         # Get the number of records
         print("COUNT OF RECORDS: " + str(len(records)) + "\n")
+        
         data['data'] = records
 
         df = pd.DataFrame(records)
@@ -79,8 +102,11 @@ def get_table_data(qb_fields, job_number, table_id):
         return df
         
     else:
-        return {f"Resonse: {str(response.status_code)} error_get_table_data": "Unable to fetch table data"}
-    print("Get existing QB table here")
+        # return {f"Resonse: {str(response.status_code)} error_get_table_data": "Unable to fetch table data"}
+        print(f"Error fetching table data: {response.status_code}")
+        print(f"WHERE clause: {where_clause}")
+        return pd.DataFrame()  # Return empty DataFrame instead of dictionary
+    # print("Get existing QB table here")
 
 #Exports shop 
 def export_weld_log_to_excel(table_id):
@@ -142,3 +168,64 @@ def export_weld_log_to_excel(table_id):
         print(f"Error fetching data: {response.status_code}")
         return None
 
+
+
+
+#Main QB call for app -- (Only fetches a single job)
+def get_table_data_old(qb_fields, job_number, table_id):
+    print("\nFetching data...")
+    # Get table info and update field mapping
+    headers = {
+        "QB-Realm-Hostname": HOSTNAME,
+        "User-Agent": USER_AGENT,
+        "Authorization": TOKEN,
+        'Content-Type': 'application/json'
+        }
+
+        # Construct where clause using tpsl_data
+    where_clause = f"{{6.EX.{job_number}}}"
+
+    query_body = {
+        "from": table_id, 
+        "select": qb_fields, 
+        "where": where_clause,
+        "orderBy": [],
+        "skip": 0,
+    }
+
+    response = requests.post(
+        f"{QUICKBASE_API_URL}/records/query",
+        headers=headers,
+        json=query_body
+    )
+    
+    if response.status_code == 200:
+        print("Request Successful... " + str(response.status_code))
+        data = response.json()
+        records = data.get('data', [])
+
+        #Extract values from dictionaries
+        for record in records:
+            for field_id in record.keys():
+                if isinstance(record[field_id], dict) and 'value' in record[field_id]:
+                    record[field_id] = record[field_id]['value']
+
+        # Get the number of records
+        print("COUNT OF RECORDS: " + str(len(records)) + "\n")
+        data['data'] = records
+
+        df = pd.DataFrame(records)
+
+        # Specify the filename and sheet name
+        filename = 'Original Dataframe.xlsx'
+        sheet_name = 'Original Dataframe'
+
+        ## Export the DataFrame to an Excel file
+        #df.to_excel(filename, sheet_name=sheet_name, index=False)
+        #print("Dataframe Exported....")
+
+        return df
+        
+    else:
+        return {f"Resonse: {str(response.status_code)} error_get_table_data": "Unable to fetch table data"}
+    print("Get existing QB table here")

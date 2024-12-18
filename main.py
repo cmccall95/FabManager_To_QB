@@ -1,5 +1,6 @@
 #from os import waitid_result
 from multiprocessing.reduction import duplicate
+from pickle import FALSE
 import re, os, sys, requests, json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QMenuBar, QMenu,
@@ -21,6 +22,16 @@ load_dotenv()  # take environment variables from .env.
 from qb_mod import get_table_data, export_weld_log_to_excel
 from transform_values import map_sch_desc, map_base_material, map_joint_details, find_closest_match
 from app_paths import get_base_path
+from dbManager.mapping_files import spool_select_fields, weld_select_fields
+from dbManager.conn_FabManager import get_spools_data, get_welds_data
+from dbManager.format_data import format_spools, format_welds
+from logger_setup import logger
+
+
+DEBUG_MODE=False
+test_payload=False # <- Will not commit to QB. Output the payload instead for viewing
+EXPORT_DROPPED_SPOOLS=False
+EXPORT_DROPPED_WELDS=False
 
 HOSTNAME = os.getenv('HOSTNAME')
 TOKEN = os.getenv('TOKEN')
@@ -320,13 +331,14 @@ def format_spools_df2(df, weld_df, job_number, regex_patterns=None): #OCI Setup 
     spool_detail_path = f"app_files/{cleaned_job_number} Spool Detail.xlsx"
 
     updated_df = add_status_column(df, spool_detail_path)
-    
-    # Export non-convertible rows to Excel
-    filename="Dropped Rows - Spool.xlsx"
-    try:
-        non_convertible_rows_df.to_excel(filename, index=True)
-    except Exception as e:
-        logger.error(f"Could not export to dataframe {filename}")
+
+    if EXPORT_DROPPED_SPOOLS:
+        # Export non-convertible rows to Excel
+        filename="Dropped Rows - Spool.xlsx"
+        try:
+            non_convertible_rows_df.to_excel(filename, index=True)
+        except Exception as e:
+            logger.error(f"Could not export to dataframe {filename}")
         
     return updated_df
 
@@ -429,7 +441,7 @@ def extract_float_from_parentheses(s):
 
 #
 def format_welds_df(df, job_number):
-    logger.info("Accessed formate_welds_df")
+    logger.info("Accessed format_welds_df")
     df = df.copy()
 
     non_convertible_values = []
@@ -521,11 +533,12 @@ def format_welds_df(df, job_number):
     logger.info(f"{rows_dropped} rows were dropped due to invalid values in 'CONTROLNO' or 'WELDLABEL'")
     
     # Export dropped rows to Excel
-    try:
-        filename = 'Dropped Rows-welds.xlsx'
-        dropped_rows_df.to_excel(filename, index=False)
-    except Exception as e:
-        logger.error(f"Could not export {filename}. Error: {e}", exc_info=True)
+    if EXPORT_DROPPED_WELDS:
+        try:
+            filename = 'Dropped Rows-welds.xlsx'
+            dropped_rows_df.to_excel(filename, index=False)
+        except Exception as e:
+            logger.error(f"Could not export {filename}. Error: {e}", exc_info=True)
 
     # Select only the desired columns and rename them
     df = df[['Related Record', 'Job', 'REVISION','Weld ID', 'SPEC', 'SIZE_I', 'GENRE', 'WDESCRIPT', 'WALL_I', 'MATGROUP','CONTROLNO', 'WELDLABEL', 'DIAINCH']]
@@ -1046,7 +1059,7 @@ class MyWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.setWindowTitle('My App')
+        self.setWindowTitle('Excel Fabrication')
         #self.showMaximized()
         
         self.tabWidget = QTabWidget()
@@ -1058,7 +1071,7 @@ class MyWindow(QMainWindow):
         
         self.tabWidget.addTab(self.tab1, "Spools")
         self.tabWidget.addTab(self.tab2, "Welds")
-        self.tabWidget.addTab(self.tab3, "Client Specs")
+        #self.tabWidget.addTab(self.tab3, "Client Specs")
         
         self.menubar = QMenuBar(self)
         self.setMenuBar(self.menubar)
@@ -1066,14 +1079,17 @@ class MyWindow(QMainWindow):
         self.file_menu = QMenu("File", self.menubar)
         self.menubar.addMenu(self.file_menu)
         
+        self.refresh_jobs = QAction("Refresh Spool Data", self)
         self.update_job = QAction("Update Job Number", self)
         self.import_action = QAction("Import .dbf Files", self)
         self.import_specs = QAction("Import Linde Specs", self)
-        
+
+        self.refresh_jobs.triggered.connect(self.refresh_tables)
         self.update_job.triggered.connect(self.set_job_number)
         self.import_action.triggered.connect(self.import_dbf_welds)
         self.import_specs.triggered.connect(self.import_linde_specs)
         
+        self.file_menu.addAction(self.refresh_jobs)
         self.file_menu.addAction(self.update_job)
         self.file_menu.addAction(self.import_action)
         self.file_menu.addAction(self.import_specs)
@@ -1308,12 +1324,36 @@ class MyWindow(QMainWindow):
                 record = {str(field_id): {"value": row[field_id]} for field_id in mapping.values() if field_id in row}
                 payload_data.append(record)
 
+
+        
         # The final payload
         payload = {
             "to": qb_table,
             "data": payload_data,
             "fieldsToReturn": [3, 6, 108] #+ [int(fid) for fid in mapping.values()]
         }
+
+        if test_payload:
+            print("Payload in testing state. Output payload")
+
+            try:
+                # First flatten the nested structure
+                flattened_data = []
+                for record in payload_data:
+                    flat_record = {}
+                    for field_id, field_data in record.items():
+                        flat_record[field_id] = field_data["value"]
+                    flattened_data.append(flat_record)
+
+                # Convert to DataFrame
+                payload_df = pd.DataFrame(flattened_data)
+                payload_df.to_excel("_Debug Payload Data.xlsx")
+
+            except Exception as e:
+                logger.error(f"Could not convert Payload debug to a pandas dataframe. Error Desc: {e}")
+                print(f"\n\nPayload:\n{payload}")
+
+
 
         # Logging the number of rows processed and ignored
         print(f"Original row count: {len(df_mapped)}, Payload row count: {len(payload_data)}, Duplicates ignored: {len(duplicate_map)}")
@@ -1398,9 +1438,13 @@ class MyWindow(QMainWindow):
         with open('weld_map.json', 'r') as f:
             mapping = json.load(f)
 
-        job_number = self.get_job_number()
+        # job_number = self.get_job_number()
+        # qb_fields=['3','6','15']
+        # existing_records_df = get_table_data(qb_fields, job_number, WELD_LOG_ID)
+
+        unique_jobs = df['Job'].unique().tolist()
         qb_fields=['3','6','15']
-        existing_records_df = get_table_data(qb_fields, job_number, WELD_LOG_ID)
+        existing_records_df = get_table_data(qb_fields, unique_jobs, WELD_LOG_ID)
 
         if existing_records_df.shape[0] == 0:
             existing_records_df = None
@@ -1417,6 +1461,14 @@ class MyWindow(QMainWindow):
             error_dialog = QErrorMessage()
             error_dialog.showMessage('Payload is empty. \nNote: Duplicate records are automatically removed. \n0 Rows added to QuickBase.')
             error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
+            return
+
+        if test_payload:
+            dlg_msg = "Weld Log Payload in Test State. \nQB Commit aborted"
+            error_dialog = QErrorMessage()
+            error_dialog.showMessage(dlg_msg)
+            error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
+            logger.info(dlg_msg)
             return
 
          #Push to QuickBase and capture the response
@@ -1488,10 +1540,16 @@ class MyWindow(QMainWindow):
                 continue  # Skip further processing and move to the next row
 
 
-         #Check if duplicate records exists
-        job_number = self.get_job_number()
+         #Check if duplicate records exists -- OLD for Single Job
+        # job_number = self.get_job_number()
+        # qb_fields=['3','6','108']
+        # existing_records_df = get_table_data(qb_fields, job_number, TPSL_ID)
+
+        # Check if duplicate records exists -- New Multijob
+        unique_jobs = df['Job'].unique().tolist()
         qb_fields=['3','6','108']
-        existing_records_df = get_table_data(qb_fields, job_number, TPSL_ID)
+        existing_records_df = get_table_data(qb_fields, unique_jobs, TPSL_ID)
+
 
         payload, row_count, duplicate_map = self.prepare_payload(df, mapping, TPSL_ID, existing_records_df, ['6', '108'])
         #print("\n\nPayload Prepared - 'Spools - TPSL'\n", payload)
@@ -1539,6 +1597,14 @@ class MyWindow(QMainWindow):
             error_dialog.showMessage('Payload is empty. \nNote: Duplicate records are automatically removed. \n0 Rows added to QuickBase.')
             error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
             #print(f"\n\nDuplicate Map: \n{duplicate_map_dict}")
+            return
+
+        if test_payload:
+            dlg_msg = "TPSL Payload in Test State. \nQB Commit aborted"
+            error_dialog = QErrorMessage()
+            error_dialog.showMessage(dlg_msg)
+            error_dialog.exec()  # Use exec_() to make sure the dialog is modal and waits for user input
+            logger.info(dlg_msg)
             return
         
         # Push to QuickBase and capture the response
@@ -1750,40 +1816,48 @@ class MyWindow(QMainWindow):
 
         formatted_welds_df = format_welds_df(welds_df, job_number)
         
-        if job_number == "30489-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #OCI Format
-            
+        # if job_number == "30489-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #OCI Format
+
+        if job_number in ["30496-", "30501-", "30502-", "30503C-", "30503S-", "30504-", "30507P-", "30507T-", "30508-" ]:
+            formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
+
         elif job_number == "30497-":
             formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
-            
-        elif job_number == "30496-":
-            formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #Blue Tide Format
-            
-        elif job_number == "30500-":
-            formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #CF Format
-            
-        elif job_number == "30501-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI/Aquatech Format
-            
-        elif job_number == "30502-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
-            
-        elif job_number == "30503S-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #CF Format
 
-        elif job_number == "30504-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
+        elif job_number in ["30496-", "30500-"]:
+            formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number)
 
-        elif job_number == "30507P-":
-            formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
-
-            # formatted_spools_df.to_excel("Formatted Spools.xlsx")
-            
- 
         else:
             formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #Linde Format
             QMessageBox.information(None, 'Success', f'Not configured for job: {job_number}\nDrawing formats will be assumed as format 2(format_spools_df2).')
             #return
+
+        # elif job_number == "30496-":
+        #     formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #Blue Tide Format
+            
+        # elif job_number == "30500-":
+        #     formatted_spools_df = format_spools_df3(spools_df, formatted_welds_df, job_number) #CF Format
+            
+        # elif job_number == "30501-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI/Aquatech Format
+            
+        # elif job_number == "30502-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
+            
+        # elif job_number == "30503S-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #CF Format
+
+        # elif job_number == "30504-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
+
+        # elif job_number == "30507P-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
+
+        # elif job_number == "30508-":
+        #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #VG/OCI Format
+ 
+        
 
         # Define required columns for pre-check
         welds_required_columns = ['Job', 'Spool', 'Weld ID']
@@ -1800,8 +1874,9 @@ class MyWindow(QMainWindow):
         
         print("\n\n>>> Attempting to fill blanks in 'Pipe Spec'....")
         filled_df = fill_blank_pipe_specs(formatted_spools_df)
+
         # Load data into tables
-        self.load_data_into_table(self.table1, formatted_spools_df)
+        self.load_data_into_table(self.table1, filled_df)#formatted_spools_df)
         self.load_data_into_table(self.table2, formatted_welds_df)
         print("\n\nLoaded 'Spools' - (TPSL)...\nLoaded 'Welds' - (Weld Log)...")
 
@@ -1809,6 +1884,76 @@ class MyWindow(QMainWindow):
         #with pd.ExcelWriter('output.xlsx') as writer:
         #    formatted_welds_df.to_excel(writer, sheet_name='Welds')
         #    formatted_spools_df.to_excel(writer, sheet_name='Spools')
+
+    def refresh_tables(self):
+        print("Refresh tables")
+
+        db_name='FabManager'
+
+        # Define required columns for pre-check
+        welds_required_columns = ['Job', 'Spool', 'Weld ID']
+        spools_required_columns = ['Spool', 'Ref Drawing', 'Series', 'NDE Group', 'Job', 'Sheet']
+
+
+        active_jobs =  ['30489','30503C','30507P', '30507T','30508', '30501'] # '['30489', '30501', '30506', '30507P', '30508'] #['30501','30504','30507P'] '30489', 
+
+        # Fetch Spool Info from database
+        spools_df = get_spools_data(db_name, None, None, active_jobs) # Get the spools after 'MC Complete' Status.
+
+        welds_df = get_welds_data(spools_df, db_name="FabManager")
+
+    
+        logger.info(f"Weld Query returned {len(welds_df)} rows")
+
+        if DEBUG_MODE:
+            if len(welds_df)> 0:
+                welds_df.to_excel("Welds Debug DF.xlsx")
+                print("Welds Debug Data Exported")
+
+        spools_df =  format_spools(spools_df, regex_patterns=None, select_fields=spool_select_fields)
+
+        welds_df, tmp_spools_df = format_welds(welds_df, spools_df, select_fields=weld_select_fields)
+
+        print("\nSpools Job-Spool pairs:")
+        print(spools_df[['Job', 'Spool']].head())
+        print("\nWelds Job-Spool pairs:") 
+        print(welds_df[['Job', 'Spool']].head())
+
+        print("\nPipe Spec null count:", spools_df['Pipe Spec'].isnull().sum())
+
+
+
+
+        # Perform pre-checks
+        print("\nInitiating Pre-Check - Spools...")
+        spools_df = pre_check(spools_df, spools_required_columns, integer_columns=['Sheet'])
+        print("\nPre-Check Complete - Spools...")
+
+        # print("\nInitiating Pre-Check - Welds...")
+        formatted_welds_df = pre_check(welds_df, welds_required_columns, hyphen_columns=['Job'])
+        # print("\nPre-Check Complete - Welds...")
+        
+        
+        # formatted_welds_df = pre_check(formatted_welds_df, welds_required_columns, hyphen_columns=['Job'])
+        
+
+        print("\n\n>>> Attempting to fill blanks in 'Pipe Spec'....")
+        filled_df = fill_blank_pipe_specs(spools_df)
+
+    
+        # Load data into tables
+        self.load_data_into_table(self.table1, filled_df)#formatted_spools_df)
+        print(">>> Spool DF Loaded to table")
+        self.load_data_into_table(self.table2, formatted_welds_df)#formatted_spools_df)
+        print(">>> Weld DF Loaded to table")
+
+        
+        # self.load_data_into_table(self.table2, formatted_welds_df)
+        # print("\n\nLoaded 'Spools' - (TPSL)...\nLoaded 'Welds' - (Weld Log)...")
+
+        if DEBUG_MODE:
+            spools_df.to_excel("Debug Spool Data.xlsx")
+            logger.info("Spool Debug File Exported")
 
     def export_table_to_excel(self, table_name):
         # Create DataFrame from table
@@ -1846,8 +1991,9 @@ class MyWindow(QMainWindow):
             print(f"Could not write to {full_filename}. The file may be open or in use. Please close the file and try again.")
 
 if __name__ == "__main__":
-    setup_logging()
+    # setup_logging()
     app = QApplication([])
     window = MyWindow()
     window.showMaximized()
     app.exec()
+

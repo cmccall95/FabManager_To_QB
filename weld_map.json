@@ -6,5 +6,7 @@
   "Joint": "20",
   "Joint Detail": "289",
   "SCH": "49",
-  "Material":  "16"
+  "Material": "16",
+  "DiaInch": "328",
+  "MTRL Group":  "340"
 }

@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>f0098452-247b-4d08-9849-9c79b65b454e</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>FabManager_To_QB.py</StartupFile>
+    <StartupFile>main.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -23,7 +23,15 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="app_paths.py" />
+    <Compile Include="dbManager\conn_FabManager.py" />
+    <Compile Include="dbManager\fabManager_db.py" />
+    <Compile Include="dbManager\format_data.py" />
+    <Compile Include="dbManager\mapping_files.py" />
     <Compile Include="FabManager_To_QB.py" />
+    <Compile Include="logger_setup.py" />
+    <Compile Include="main.py" />
+    <Compile Include="transform_values.py" />
+    <Compile Include="project_setup.py" />
     <Compile Include="qb_mod.py" />
     <Compile Include="tableExtract.py" />
   </ItemGroup>
@@ -54,6 +62,9 @@
     <Content Include="spool_map.json" />
     <Content Include="TextFile1.txt" />
     <Content Include="weld_map.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="dbManager\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
