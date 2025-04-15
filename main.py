@@ -55,6 +55,9 @@ spool_detail_path = "app_files/_job_number_ Spool Detail.xlsx"
 # Define the list of statuses to skip
 skip_statuses = ['Void', 'Eng Rel', 'On Hold', 'DR', 'Drawn', 'DNF']
 
+# Active Jobs
+active_jobs =  ['30489'] #['30503C','30507P', '30507T','30508', '30501'] # '['30489', '30501', '30506', '30507P', '30508'] #['30501','30504','30507P'] '30489', 
+
 def setup_logging():
     # Create a custom logger
     global logger
@@ -1000,7 +1003,7 @@ class StandardTable(QWidget):
         if next_index.isValid():
             self.view.setCurrentIndex(next_index)
 
-    def move_to_previous_cell(self): #
+    def move_to_previous_cell(self): 
         current = self.view.currentIndex()
         previous_index = self.view.model().index(current.row(), current.column() - 1)
         if previous_index.isValid():
@@ -1819,7 +1822,7 @@ class MyWindow(QMainWindow):
         # if job_number == "30489-":
         #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #OCI Format
 
-        if job_number in ["30496-", "30501-", "30502-", "30503C-", "30503S-", "30504-", "30507P-", "30507T-", "30508-" ]:
+        if job_number in ["30496-", "30501-", "30502-", "30503C-", "30503S-", "30504-", "30507P-", "30507T-", "30508-", "30510-", "30511-"]:
             formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
 
         elif job_number == "30497-":
@@ -1895,15 +1898,16 @@ class MyWindow(QMainWindow):
         spools_required_columns = ['Spool', 'Ref Drawing', 'Series', 'NDE Group', 'Job', 'Sheet']
 
 
-        active_jobs =  ['30489','30503C','30507P', '30507T','30508', '30501'] # '['30489', '30501', '30506', '30507P', '30508'] #['30501','30504','30507P'] '30489', 
-
         # Fetch Spool Info from database
         spools_df = get_spools_data(db_name, None, None, active_jobs) # Get the spools after 'MC Complete' Status.
+
+        print(F"SPOOL DATA RETURNED INITIAL: {len(spools_df)}")
 
         welds_df = get_welds_data(spools_df, db_name="FabManager")
 
     
         logger.info(f"Weld Query returned {len(welds_df)} rows")
+        # print(f"Wedl Query: {}")
 
         if DEBUG_MODE:
             if len(welds_df)> 0:
@@ -1911,6 +1915,8 @@ class MyWindow(QMainWindow):
                 print("Welds Debug Data Exported")
 
         spools_df =  format_spools(spools_df, regex_patterns=None, select_fields=spool_select_fields)
+
+        print(F"SPOOL DATA RETURNED AFTER FORMAT: {len(spools_df)}")
 
         welds_df, tmp_spools_df = format_welds(welds_df, spools_df, select_fields=weld_select_fields)
 
@@ -1920,8 +1926,6 @@ class MyWindow(QMainWindow):
         print(welds_df[['Job', 'Spool']].head())
 
         print("\nPipe Spec null count:", spools_df['Pipe Spec'].isnull().sum())
-
-
 
 
         # Perform pre-checks

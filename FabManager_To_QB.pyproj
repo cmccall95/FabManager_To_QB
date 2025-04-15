@@ -23,6 +23,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="app_paths.py" />
+    <Compile Include="dbManager\check_folder.py" />
     <Compile Include="dbManager\conn_FabManager.py" />
     <Compile Include="dbManager\fabManager_db.py" />
     <Compile Include="dbManager\format_data.py" />

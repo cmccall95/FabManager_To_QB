@@ -121,6 +121,8 @@ def get_welds_data(spools_df, db_name="FabManager"):
 
             # Normalize the column/field name values
             df.rename(columns=weld_column_mapping, inplace=True)
+
+            print(f"Weld Query Successful: {query}")
                 
             return df
             
@@ -239,11 +241,13 @@ def get_spools_data(db_name="FabManager", job_numbers=None, all_jobs_after=None,
 
             print(df.columns)
 
+            print(f"Spool Query Successful: {query}")
+
             return df
 
     except Exception as e:
         logger.error(f"Error executing spools query: {e}", exc_info=True)
-        print(f"\n\nQuery: {query}")
+        print(f"Error in Spool Query: \nQuery\n: {query}")
         return pd.DataFrame() # Return blank dataframe
         # print(f"Error executing query: {e}")
         # raise
