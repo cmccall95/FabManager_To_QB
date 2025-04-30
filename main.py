@@ -56,7 +56,7 @@ spool_detail_path = "app_files/_job_number_ Spool Detail.xlsx"
 skip_statuses = ['Void', 'Eng Rel', 'On Hold', 'DR', 'Drawn', 'DNF']
 
 # Active Jobs
-active_jobs =  ['30489'] #['30503C','30507P', '30507T','30508', '30501'] # '['30489', '30501', '30506', '30507P', '30508'] #['30501','30504','30507P'] '30489', 
+active_jobs =  ['30511, 30513'] #['30503C','30507P', '30507T','30508', '30501'] # '['30489', '30501', '30506', '30507P', '30508'] #['30501','30504','30507P'] '30489', 
 
 def setup_logging():
     # Create a custom logger
@@ -917,34 +917,7 @@ class StandardTable(QWidget):
         listWidget.blockSignals(False)
 
 
-    # def selectAllItems(self, listWidget, state, updateCheckboxState=True):
-    #     print(f"\nSelectAllItems Triggered. State: {state}")
-    #     listWidget.blockSignals(True)
-
-    #     new_state = Qt.CheckState.Checked if state == Qt.CheckState.Checked else Qt.CheckState.Unchecked
-
-    #     for i in range(listWidget.count()):
-    #         item = listWidget.item(i)
-    #         if not item.isHidden():
-    #             item.setCheckState(new_state)
-
-    #     listWidget.blockSignals(False)
-    #     if updateCheckboxState:
-    #         self.updateSelectAllState(listWidget, self.sender())
-
-    # def updateSelectAllState(self, listWidget, selectAllCheckbox):
-    #     visible_count = sum(1 for i in range(listWidget.count()) if not listWidget.item(i).isHidden())
-    #     checked_count = sum(not listWidget.item(i).isHidden() and listWidget.item(i).checkState() == Qt.CheckState.Checked for i in range(listWidget.count()))
-
-    #     print(f"\nupdateSelectAllState Triggered\nVisible: {visible_count}\nChecked Count: {checked_count}")
-
-    #     if checked_count == 0:
-    #         selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
-    #     elif checked_count == visible_count:
-    #         selectAllCheckbox.setCheckState(Qt.CheckState.Checked)
-    #     else:
-    #         selectAllCheckbox.setCheckState(Qt.CheckState.Unchecked)
-
+    
     def filter_click(self, column_index):
         header = self.view.horizontalHeader()
         menu = self.build_filter_menu(column_index)
@@ -1822,7 +1795,7 @@ class MyWindow(QMainWindow):
         # if job_number == "30489-":
         #     formatted_spools_df = format_spools_df2(spools_df, formatted_welds_df, job_number) #OCI Format
 
-        if job_number in ["30496-", "30501-", "30502-", "30503C-", "30503S-", "30504-", "30507P-", "30507T-", "30508-", "30510-", "30511-"]:
+        if job_number in ["30496-", "30501-", "30502-", "30503C-", "30503S-", "30504-", "30507P-", "30507T-", "30508-", "30510-", "30511-", "30513-"]:
             formatted_spools_df = format_spools_df(spools_df, formatted_welds_df, job_number) #Linde Format
 
         elif job_number == "30497-":
